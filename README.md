@@ -12,6 +12,11 @@ python main.py
 Tarayicida: http://localhost:8989 (agdaki diger PC'lerden `http://<pc-ip>:8989`).
 InfluxDB ayarlari arayuzdeki ayarlar penceresinden yapilir ve `config.json` dosyasina kaydedilir.
 
+## Windows kurulumu
+
+`derle.bat` -> `Output\kur.exe` (Python 3.11 + Inno Setup 6 gerekir) ya da GitHub Actions artifact'i.
+Kurulum servisi (`BenchMonitor`) kaydeder ve baslatir; veri `C:\ProgramData\BenchMonitor`.
+
 ## Testler
 
 ```

@@ -20,6 +20,9 @@ import time
 import random
 import asyncio
 import threading
+import sys
+import logging
+import logging.handlers
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,9 +38,27 @@ from pydantic import BaseModel
 # 1) CONFIGURATION (persisted to config.json -> survives container restart via volume/rebuild)
 # ==========================================================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# PyInstaller ile paketlenmis (sys.frozen) calisirken __file__ gecici _MEIPASS klasorunu
+# gosterir; config/preset orada kaybolur.  Bu yuzden veri klasoru ProgramData'dir.
+FROZEN = bool(getattr(sys, "frozen", False))
+
+if FROZEN:
+    BASE_DIR = os.environ.get("BENCHMONITOR_DATA") or os.path.join(
+        os.environ.get("PROGRAMDATA") or r"C:\ProgramData", "BenchMonitor")
+    os.makedirs(BASE_DIR, exist_ok=True)
+    # vendor/ (uPlot) icin ilk bulunan: veri klasoru > exe yani > paket ici (_MEIPASS)
+    _VENDOR_CANDIDATES = [
+        os.path.join(BASE_DIR, "vendor"),
+        os.path.join(os.path.dirname(sys.executable), "vendor"),
+        os.path.join(getattr(sys, "_MEIPASS", ""), "vendor"),
+    ]
+    VENDOR_DIR = next((d for d in _VENDOR_CANDIDATES if os.path.isdir(d)), _VENDOR_CANDIDATES[0])
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    VENDOR_DIR = os.path.join(BASE_DIR, "vendor")
+
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-VENDOR_DIR = os.path.join(BASE_DIR, "vendor")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "influx_url": "http://10.10.2.6:8086",
@@ -4938,11 +4959,56 @@ async def ws_endpoint(ws: WebSocket) -> None:
 # 9) ENTRYPOINT
 # ==========================================================================================
 
+class _LogStream(object):
+    """print()/stderr ciktilarini log dosyasina yonlendirir (--noconsole'da stdout None)."""
+
+    def __init__(self, logger: logging.Logger, level: int) -> None:
+        self.logger, self.level, self._buf = logger, level, ""
+
+    def write(self, text: str) -> int:
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.strip():
+                self.logger.log(self.level, line.rstrip())
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return False
+
+
+def setup_file_logging() -> None:
+    """Konsol yoksa (exe / Windows servisi) tum loglari LOG_DIR altina doner dosyaya yaz."""
+    os.makedirs(LOG_DIR, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        os.path.join(LOG_DIR, "benchmonitor.log"),
+        maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(logging.INFO)
+    logging.captureWarnings(True)
+    sys.stdout = _LogStream(logging.getLogger("stdout"), logging.INFO)
+    sys.stderr = _LogStream(logging.getLogger("stderr"), logging.ERROR)
+
+
 if __name__ == "__main__":
+    file_logging = FROZEN or sys.stdout is None or sys.stderr is None
+    if file_logging:
+        setup_file_logging()
     print("=" * 78)
     print(" TEST BENCH MONITOR  ->  http://0.0.0.0:8989")
     print(" InfluxDB : {0}  |  db={1}  |  measurement={2}".format(
         CONFIG["influx_url"], CONFIG["db"], CONFIG.get("measurement")))
-    print(" Config   : {0}".format(CONFIG_PATH))
+    print(" Data     : {0}".format(BASE_DIR))
     print("=" * 78)
-    uvicorn.run(app, host="0.0.0.0", port=8989, log_level="info", ws_ping_interval=20)
+    if file_logging:
+        # log_config=None: uvicorn kendi (konsol) handler'larini kurmaz, kok logger'a akar.
+        # access_log kapali: her yoklama bir satir olur, log dosyasini bogar.
+        uvicorn.run(app, host="0.0.0.0", port=8989, log_level="info", ws_ping_interval=20,
+                    log_config=None, access_log=False)
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=8989, log_level="info", ws_ping_interval=20)

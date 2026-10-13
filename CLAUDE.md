@@ -26,7 +26,7 @@ Endüstriyel test tezgâhı için canlı izleme paneli. Tek dosya: `main.py` (~4
 | 6 | WEBSOCKET HUB | 388 |
 | 7 | EMBEDDED FRONTEND (`INDEX_HTML`) | 434 |
 | 8 | FASTAPI APP: tüm uç noktalar | 4211 |
-| 9 | ENTRYPOINT: `uvicorn.run(app, host="0.0.0.0", port=8989)` | 4938 |
+| 9 | ENTRYPOINT: dosya loglama (donmuş mod) + `uvicorn.run(..., port=8989)` | 4960 |
 
 ## Ayarlar (`config.json`, `main.py` yanında)
 
@@ -69,17 +69,14 @@ Gerçek FastAPI kuruluysa doğrudan `python main.py` ile de test edilebilir.
 Hedef PC'de sanallaştırma/WSL kapalı olmak zorunda → Docker çalışmıyor. `Dockerfile` referans için duruyor.
 GitHub Pages da olmaz: uygulama Python sunucusu, InfluxDB yerel ağda (HTTP, CORS yok).
 
-## SIRADAKİ İŞ: Windows paketleme (henüz yapılmadı)
+## Windows paketleme (`derle.bat` → `Output\kur.exe`)
 
-Hedef: çift tıklanan tek bir kurulum dosyası (`kur.exe`). Kimse yanlışlıkla kapatamamalı/silememeli.
+Hedef: çift tıklanan tek kurulum dosyası (`kur.exe`). Kimse yanlışlıkla kapatamamalı/silememeli.
 
-1. **`main.py` düzeltmeleri (PyInstaller için şart):**
-   - `BASE_DIR = os.path.dirname(os.path.abspath(__file__))` → `--onefile` modunda geçici `_MEIPASS` klasörünü gösterir, `config.json`/`presets.json` her açılışta kaybolur. Donmuş (`sys.frozen`) iken veri klasörü `C:\ProgramData\BenchMonitor` olmalı (yoksa oluştur). `VENDOR_DIR` için exe yanını veya `_MEIPASS`'ı kullan.
-   - `--noconsole` ile `sys.stdout`/`sys.stderr` `None` olur → uvicorn loglaması çöker. Log'u `ProgramData\BenchMonitor\logs\` altına dosyaya yönlendir, `uvicorn.run(..., log_config=None)` veya özel log config.
-   - Mevcut davranışı (`python main.py`) bozma; testler geçmeye devam etmeli.
-2. **PyInstaller:** `pyinstaller --onefile --noconsole --name BenchMonitor main.py`. uvicorn gizli importları için `--collect-submodules uvicorn` (ya da `--hidden-import` ile `uvicorn.logging`, `uvicorn.loops.auto`, `uvicorn.protocols.http.auto`, `uvicorn.protocols.websockets.auto`, `uvicorn.lifespan.on`). Bir `derle.bat` ile tekrar edilebilir yap.
-3. **Windows servisi:** pencere yok, açılışta (oturum açmadan) başlar, çökerse yeniden başlar. Seçenekler: NSSM (basit) veya pywin32 servis sarmalayıcısı.
-4. **Kurulum (Inno Setup):** program `C:\Program Files\BenchMonitor` (normal kullanıcı silemez), veri `C:\ProgramData\BenchMonitor`, servisi kaydet + başlat, güvenlik duvarında TCP 8989 izni, masaüstüne `http://localhost:8989` kısayolu. Kaldırmada servisi durdur/sil, veriyi koru.
-5. **Sonra (isteğe bağlı):** GitHub Actions `windows-latest` ile `kur.exe` üretip Releases'a koymak.
+- **`main.py` (donmuş mod):** `sys.frozen` iken veri klasörü `C:\ProgramData\BenchMonitor` (`BENCHMONITOR_DATA` ortam değişkeniyle değiştirilebilir); `config.json`, `presets.json`, `logs\benchmonitor.log` (5 MB × 5 dönen) orada. `VENDOR_DIR` sırası: veri klasörü\vendor → exe yanı\vendor → `_MEIPASS`\vendor. Konsol yoksa (`FROZEN` ya da `stdout is None`) `print` + uvicorn logları dosyaya, `uvicorn.run(log_config=None, access_log=False)`. `python main.py` davranışı değişmedi.
+- **PyInstaller:** `--onedir --noconsole --collect-submodules uvicorn` (`--onefile` değil: servis her durdurulduğunda/öldürüldüğünde `%TEMP%\_MEI*` artığı bırakır, açılış yavaş, antivirüs daha çok takılır. Tek dosya ihtiyacını zaten `kur.exe` karşılıyor).
+- **Servis:** NSSM (`packaging\tools\nssm.exe`, `derle.bat` ilk seferde indirir, repoya girmez). Ad `BenchMonitor`, LocalSystem, otomatik başlar, çökerse 5 sn sonra yeniden başlar (+ `sc failure`).
+- **Kurulum:** `packaging/BenchMonitor.iss` (Inno Setup 6). Program `C:\Program Files\BenchMonitor`, veri `C:\ProgramData\BenchMonitor` (Kullanıcılar sadece okur), güvenlik duvarı TCP 8989, masaüstü + Başlat menüsü `http://localhost:8989` kısayolu. Güncellemede önce servis durur. Kaldırmada servis + güvenlik duvarı kuralı silinir, veri korunur.
+- **CI:** `.github/workflows/windows-kurulum.yml`: Linux'ta Python testleri → `windows-latest`'te `derle.bat` + exe duman testi → `kur.exe` artifact. `v*` etiketi basılınca Releases'a da konur (`git tag v1.0.0 && git push origin v1.0.0`).
 
 Notlar: PyInstaller exe'leri bazı antivirüslerde yanlış alarm verebilir (gerekirse Nuitka alternatif). Kaynak kod exe'den çıkarılabilir, gizlilik sağlamaz.
