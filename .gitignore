@@ -1,0 +1,22 @@
+# Calisma verisi (sifre icerebilir) - ASLA repoya girmemeli
+config.json
+presets.json
+data/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# PyInstaller / kurulum ciktilari
+build/
+dist/
+*.spec
+Output/
+
+# Node / test ciktilari
+node_modules/
+tests/out/*
+!tests/out/.gitkeep
