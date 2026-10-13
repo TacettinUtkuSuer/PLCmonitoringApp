@@ -10,6 +10,7 @@ cd /d "%~dp0"
 set "VERSION=%~1"
 if "%VERSION%"=="" set "VERSION=1.0.0"
 set "NSSM_URL=https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip"
+set "NSSM_URL2=https://nssm.cc/release/nssm-2.24.zip"
 
 echo.
 echo [1/4] Python bagimliliklari...
@@ -28,8 +29,10 @@ echo [3/4] NSSM (servis sarmalayici)...
 if exist "packaging\tools\nssm.exe" goto :nssm_tamam
 if not exist "packaging\tools" mkdir "packaging\tools"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ErrorActionPreference='Stop'; $z=Join-Path $env:TEMP 'nssm.zip'; $d=Join-Path $env:TEMP 'nssm_x';" ^
-  "Invoke-WebRequest -Uri '%NSSM_URL%' -OutFile $z -UseBasicParsing;" ^
+  "$ErrorActionPreference='Stop'; $z=Join-Path $env:TEMP 'nssm.zip'; $d=Join-Path $env:TEMP 'nssm_x'; $ok=$false;" ^
+  "foreach ($u in @('%NSSM_URL%','%NSSM_URL2%')) { for ($i=1; $i -le 3 -and -not $ok; $i++) {" ^
+  "  try { Invoke-WebRequest -Uri $u -OutFile $z -UseBasicParsing; $ok=$true } catch { Write-Host ('    ' + $u + ' deneme ' + $i + ': ' + $_); Start-Sleep 5 } } };" ^
+  "if (-not $ok) { throw 'nssm indirilemedi; nssm.exe (win64) dosyasini elle packaging\tools\ altina koyun' };" ^
   "if (Test-Path $d) { Remove-Item $d -Recurse -Force }; Expand-Archive $z $d;" ^
   "Copy-Item (Get-ChildItem $d -Recurse -Filter nssm.exe | Where-Object { $_.FullName -match 'win64' } | Select-Object -First 1).FullName 'packaging\tools\nssm.exe'" || goto :hata
 :nssm_tamam

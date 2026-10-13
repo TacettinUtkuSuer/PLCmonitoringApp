@@ -32,6 +32,22 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: NSSM onbellek
+        uses: actions/cache@v4
+        with:
+          path: packaging/tools/nssm.exe
+          key: nssm-2.24-101-win64
+      - name: NSSM (Chocolatey; nssm.cc sik sik coker)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          if (Test-Path packaging\tools\nssm.exe) { exit 0 }
+          choco install nssm -y --no-progress
+          $f = Get-ChildItem C:\ProgramData\chocolatey\lib\nssm -Recurse -Filter nssm.exe | Where-Object { $_.FullName -match 'win64' } | Select-Object -First 1
+          if (-not $f) { throw 'choco paketinde win64 nssm.exe yok' }
+          New-Item -ItemType Directory -Force packaging\tools | Out-Null
+          Copy-Item $f.FullName packaging\tools\nssm.exe
+          Get-Item packaging\tools\nssm.exe
       - name: Surum
         id: v
         shell: bash
