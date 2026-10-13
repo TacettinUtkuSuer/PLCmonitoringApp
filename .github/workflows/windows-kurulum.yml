@@ -48,7 +48,7 @@ jobs:
           $ok = $false
           for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
             Start-Sleep 1
-            try { $r = Invoke-WebRequest http://localhost:8989/ -UseBasicParsing -TimeoutSec 2; $ok = ($r.StatusCode -eq 200) } catch {}
+            try { $r = Invoke-WebRequest http://127.0.0.1:8989/ -UseBasicParsing -TimeoutSec 5; $ok = ($r.StatusCode -eq 200) } catch {}
           }
           Stop-Process $p -Force
           Get-Content "$env:BENCHMONITOR_DATA\logs\benchmonitor.log" -ErrorAction SilentlyContinue
