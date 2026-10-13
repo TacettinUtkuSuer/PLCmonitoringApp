@@ -8,7 +8,7 @@
  * ISO 8601 -> float Unix epoch seconds conversion done in Python.
  * Stateless backend: no time-series data is ever kept in server RAM.
  * Reactive sensor pool with WebSocket broadcast (zero F5 refresh required).
- * Port: 8989
+ * Port: 8989 (BENCHMONITOR_PORT ortam degiskeniyle degistirilebilir)
 ==========================================================================================
 """
 
@@ -58,6 +58,18 @@ else:
     VENDOR_DIR = os.path.join(BASE_DIR, "vendor")
 
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+DEFAULT_PORT = 8989
+
+
+def get_port() -> int:
+    """Dinlenecek port: BENCHMONITOR_PORT ortam degiskeni (kurulumda sorulur), yoksa 8989."""
+    try:
+        port = int(os.environ.get("BENCHMONITOR_PORT") or DEFAULT_PORT)
+        return port if 1 <= port <= 65535 else DEFAULT_PORT
+    except ValueError:
+        return DEFAULT_PORT
+
+
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -4999,8 +5011,9 @@ if __name__ == "__main__":
     file_logging = FROZEN or sys.stdout is None or sys.stderr is None
     if file_logging:
         setup_file_logging()
+    port = get_port()
     print("=" * 78)
-    print(" TEST BENCH MONITOR  ->  http://0.0.0.0:8989")
+    print(" TEST BENCH MONITOR  ->  http://0.0.0.0:{0}".format(port))
     print(" InfluxDB : {0}  |  db={1}  |  measurement={2}".format(
         CONFIG["influx_url"], CONFIG["db"], CONFIG.get("measurement")))
     print(" Data     : {0}".format(BASE_DIR))
@@ -5008,7 +5021,7 @@ if __name__ == "__main__":
     if file_logging:
         # log_config=None: uvicorn kendi (konsol) handler'larini kurmaz, kok logger'a akar.
         # access_log kapali: her yoklama bir satir olur, log dosyasini bogar.
-        uvicorn.run(app, host="0.0.0.0", port=8989, log_level="info", ws_ping_interval=20,
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info", ws_ping_interval=20,
                     log_config=None, access_log=False)
     else:
-        uvicorn.run(app, host="0.0.0.0", port=8989, log_level="info", ws_ping_interval=20)
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info", ws_ping_interval=20)

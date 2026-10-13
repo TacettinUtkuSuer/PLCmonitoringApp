@@ -7,7 +7,7 @@ Kullanıcı Türkçe konuşuyor ve kısa, net cevap istiyor. Formülleri LaTeX i
 
 Endüstriyel test tezgâhı için canlı izleme paneli. Tek dosya: `main.py` (~4950 satır).
 
-- Backend: Python 3.11, FastAPI + uvicorn, port **8989**, `python main.py` ile başlar.
+- Backend: Python 3.11, FastAPI + uvicorn, port **8989** (`BENCHMONITOR_PORT` ortam değişkeniyle değişir, `get_port()`), `python main.py` ile başlar.
 - Veri kaynağı: InfluxDB **1.x**, InfluxQL, HTTP `GET {url}/query?db=..&q=..`. Uygulama veri yazmaz, sadece okur.
 - Frontend: HTML/CSS/JS `main.py` içinde `INDEX_HTML` string'i olarak gömülü. uPlot API'si ile uyumlu kendi çizim motoru var, CDN gerekmez. `vendor/` içine gerçek `uPlot.iife.min.js` + `uPlot.min.css` konursa onlar tercih edilir.
 - Ekranlar arası canlı senkron: WebSocket `/ws` (sensör havuzu değişince tüm ekranlar F5'siz güncellenir).
@@ -26,7 +26,7 @@ Endüstriyel test tezgâhı için canlı izleme paneli. Tek dosya: `main.py` (~4
 | 6 | WEBSOCKET HUB | 388 |
 | 7 | EMBEDDED FRONTEND (`INDEX_HTML`) | 434 |
 | 8 | FASTAPI APP: tüm uç noktalar | 4211 |
-| 9 | ENTRYPOINT: dosya loglama (donmuş mod) + `uvicorn.run(..., port=8989)` | 4960 |
+| 9 | ENTRYPOINT: dosya loglama (donmuş mod) + `uvicorn.run(..., port=get_port())` | 4960 |
 
 ## Ayarlar (`config.json`, `main.py` yanında)
 
@@ -76,7 +76,7 @@ Hedef: çift tıklanan tek kurulum dosyası (`kur.exe`). Kimse yanlışlıkla ka
 - **`main.py` (donmuş mod):** `sys.frozen` iken veri klasörü `C:\ProgramData\BenchMonitor` (`BENCHMONITOR_DATA` ortam değişkeniyle değiştirilebilir); `config.json`, `presets.json`, `logs\benchmonitor.log` (5 MB × 5 dönen) orada. `VENDOR_DIR` sırası: veri klasörü\vendor → exe yanı\vendor → `_MEIPASS`\vendor. Konsol yoksa (`FROZEN` ya da `stdout is None`) `print` + uvicorn logları dosyaya, `uvicorn.run(log_config=None, access_log=False)`. `python main.py` davranışı değişmedi.
 - **PyInstaller:** `--onedir --noconsole --collect-submodules uvicorn` (`--onefile` değil: servis her durdurulduğunda/öldürüldüğünde `%TEMP%\_MEI*` artığı bırakır, açılış yavaş, antivirüs daha çok takılır. Tek dosya ihtiyacını zaten `kur.exe` karşılıyor).
 - **Servis:** NSSM (`packaging\tools\nssm.exe`, `derle.bat` ilk seferde indirir, repoya girmez). Ad `BenchMonitor`, LocalSystem, otomatik başlar, çökerse 5 sn sonra yeniden başlar (+ `sc failure`).
-- **Kurulum:** `packaging/BenchMonitor.iss` (Inno Setup 6). Program `C:\Program Files\BenchMonitor`, veri `C:\ProgramData\BenchMonitor` (Kullanıcılar sadece okur), güvenlik duvarı TCP 8989, masaüstü + Başlat menüsü `http://localhost:8989` kısayolu. Güncellemede önce servis durur. Kaldırmada servis + güvenlik duvarı kuralı silinir, veri korunur.
+- **Kurulum:** `packaging/BenchMonitor.iss` (Inno Setup 6). Sihirbaz portu bir kez sorar (varsayılan 8989, güncellemede önceki değer; sessiz kurulumda `kur.exe /SILENT /PORT=9000`) → servise `BENCHMONITOR_PORT` olarak verilir. Program `C:\Program Files\BenchMonitor`, veri `C:\ProgramData\BenchMonitor` (Kullanıcılar sadece okur), güvenlik duvarı kuralı "Bench Monitor" (seçilen TCP port), masaüstü + Başlat menüsü `http://localhost:<port>` kısayolu. Portu sonradan değiştirmek: `kur.exe`'yi yeniden çalıştır. Güncellemede önce servis durur. Kaldırmada servis + güvenlik duvarı kuralı silinir, veri korunur.
 - **CI:** `.github/workflows/windows-kurulum.yml`: Linux'ta Python testleri → `windows-latest`'te `derle.bat` + exe duman testi → `kur.exe` artifact. `v*` etiketi basılınca Releases'a da konur (`git tag v1.0.0 && git push origin v1.0.0`).
 
 Notlar: PyInstaller exe'leri bazı antivirüslerde yanlış alarm verebilir (gerekirse Nuitka alternatif). Kaynak kod exe'den çıkarılabilir, gizlilik sağlamaz.

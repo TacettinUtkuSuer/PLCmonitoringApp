@@ -56,19 +56,23 @@ jobs:
       - name: derle.bat
         shell: cmd
         run: derle.bat ${{ steps.v.outputs.ver }}
-      - name: Duman testi (exe 8989'da cevap veriyor mu?)
+      - name: Duman testi (varsayilan 8989 + BENCHMONITOR_PORT=9123)
         shell: pwsh
         run: |
           $env:BENCHMONITOR_DATA = "$env:RUNNER_TEMP\bmdata"
-          $p = Start-Process dist\BenchMonitor\BenchMonitor.exe -PassThru
-          $ok = $false
-          for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
+          foreach ($port in @(8989, 9123)) {
+            if ($port -eq 8989) { Remove-Item Env:BENCHMONITOR_PORT -ErrorAction SilentlyContinue } else { $env:BENCHMONITOR_PORT = "$port" }
+            $p = Start-Process dist\BenchMonitor\BenchMonitor.exe -PassThru
+            $ok = $false
+            for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
+              Start-Sleep 1
+              try { $r = Invoke-WebRequest "http://127.0.0.1:$port/" -UseBasicParsing -TimeoutSec 5; $ok = ($r.StatusCode -eq 200) } catch {}
+            }
+            Stop-Process $p -Force
             Start-Sleep 1
-            try { $r = Invoke-WebRequest http://127.0.0.1:8989/ -UseBasicParsing -TimeoutSec 5; $ok = ($r.StatusCode -eq 200) } catch {}
+            if (-not $ok) { Get-Content "$env:BENCHMONITOR_DATA\logs\benchmonitor.log" -ErrorAction SilentlyContinue; throw "exe $port portunda cevap vermedi" }
+            Write-Host "port $port OK"
           }
-          Stop-Process $p -Force
-          Get-Content "$env:BENCHMONITOR_DATA\logs\benchmonitor.log" -ErrorAction SilentlyContinue
-          if (-not $ok) { throw "exe 8989'da cevap vermedi" }
       - uses: actions/upload-artifact@v4
         with:
           name: kur-${{ steps.v.outputs.ver }}

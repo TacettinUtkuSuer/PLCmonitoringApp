@@ -5,12 +5,15 @@
 ;  Program : C:\Program Files\BenchMonitor      (normal kullanici silemez/degistiremez)
 ;  Veri    : C:\ProgramData\BenchMonitor        (config.json, presets.json, logs\) - kaldirmada KORUNUR
 ;  Servis  : "BenchMonitor" (NSSM), LocalSystem, otomatik baslar, coker ise yeniden baslar
-;  Ag      : Guvenlik duvarinda gelen TCP 8989 izni
+;  Port    : kurulumda bir kez sorulur (varsayilan 8989, guncellemede onceki deger);
+;            servise BENCHMONITOR_PORT olarak verilir. Sessiz kurulum: kur.exe /SILENT /PORT=9000
+;  Ag      : Guvenlik duvarinda gelen TCP <port> izni
 ; ==========================================================================================
 
 #define AppName      "Bench Monitor"
 #define SvcName      "BenchMonitor"
-#define AppPort      "8989"
+#define DefaultPort  "8989"
+#define FwRule       "Bench Monitor"
 #ifndef AppVersion
   #define AppVersion "1.0.0"
 #endif
@@ -50,8 +53,8 @@ Source: "tools\nssm.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [INI]
 ; Masaustu + Baslat menusu: tarayicida panel
-Filename: "{commondesktop}\{#AppName}.url"; Section: "InternetShortcut"; Key: "URL"; String: "http://localhost:{#AppPort}"
-Filename: "{group}\{#AppName}.url"; Section: "InternetShortcut"; Key: "URL"; String: "http://localhost:{#AppPort}"
+Filename: "{commondesktop}\{#AppName}.url"; Section: "InternetShortcut"; Key: "URL"; String: "http://localhost:{code:GetPort}"
+Filename: "{group}\{#AppName}.url"; Section: "InternetShortcut"; Key: "URL"; String: "http://localhost:{code:GetPort}"
 
 [Icons]
 Name: "{group}\Veri ve log klasoru"; Filename: "{commonappdata}\BenchMonitor"
@@ -63,9 +66,9 @@ Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\BenchMonitor"" /inh
 Filename: "{app}\nssm.exe"; Parameters: "remove {#SvcName} confirm"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "install {#SvcName} ""{app}\BenchMonitor.exe"""; Flags: runhidden waituntilterminated; StatusMsg: "Servis kuruluyor..."
 Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} DisplayName ""{#AppName}"""; Flags: runhidden waituntilterminated
-Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} Description ""Test tezgahi canli izleme paneli (http://localhost:{#AppPort})"""; Flags: runhidden waituntilterminated
+Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} Description ""Test tezgahi canli izleme paneli (http://localhost:{code:GetPort})"""; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} AppDirectory ""{app}"""; Flags: runhidden waituntilterminated
-Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} AppEnvironmentExtra BENCHMONITOR_DATA={commonappdata}\BenchMonitor"; Flags: runhidden waituntilterminated
+Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} AppEnvironmentExtra BENCHMONITOR_DATA={commonappdata}\BenchMonitor BENCHMONITOR_PORT={code:GetPort}"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} Start SERVICE_AUTO_START"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} AppNoConsole 1"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} AppExit Default Restart"; Flags: runhidden waituntilterminated
@@ -77,22 +80,74 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#SvcName} AppRotateBytes 5242880";
 ; nssm.exe'nin kendisi coker ise Windows SCM yeniden baslatsin
 Filename: "{sys}\sc.exe"; Parameters: "failure {#SvcName} reset= 86400 actions= restart/5000/restart/5000/restart/30000"; Flags: runhidden waituntilterminated
 ; --- guvenlik duvari
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#AppName} (TCP {#AppPort})"""; Flags: runhidden waituntilterminated
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#AppName} (TCP {#AppPort})"" dir=in action=allow protocol=TCP localport={#AppPort} profile=any"; Flags: runhidden waituntilterminated; StatusMsg: "Guvenlik duvari ayarlaniyor..."
+; (port degistiyse eski kural da gitsin: ayni adli tum kurallar silinir)
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FwRule}"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FwRule}"" dir=in action=allow protocol=TCP localport={code:GetPort} profile=any"; Flags: runhidden waituntilterminated; StatusMsg: "Guvenlik duvari ayarlaniyor..."
 ; --- baslat
 Filename: "{app}\nssm.exe"; Parameters: "start {#SvcName}"; Flags: runhidden waituntilterminated; StatusMsg: "Servis baslatiliyor..."
-Filename: "http://localhost:{#AppPort}"; Description: "Paneli tarayicida ac"; Flags: postinstall shellexec nowait skipifsilent
+Filename: "http://localhost:{code:GetPort}"; Description: "Paneli tarayicida ac"; Flags: postinstall shellexec nowait skipifsilent
 
 [UninstallRun]
 Filename: "{app}\nssm.exe"; Parameters: "stop {#SvcName}"; Flags: runhidden waituntilterminated; RunOnceId: "SvcStop"
 Filename: "{app}\nssm.exe"; Parameters: "remove {#SvcName} confirm"; Flags: runhidden waituntilterminated; RunOnceId: "SvcRemove"
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#AppName} (TCP {#AppPort})"""; Flags: runhidden waituntilterminated; RunOnceId: "FwDelete"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FwRule}"""; Flags: runhidden waituntilterminated; RunOnceId: "FwDelete"
 
 [UninstallDelete]
 Type: files; Name: "{commondesktop}\{#AppName}.url"
 Type: files; Name: "{group}\{#AppName}.url"
 
 [Code]
+var
+  PortPage: TInputQueryWizardPage;
+
+// Gecerli port (1-65535) ya da -1
+function ParsePort(const S: String): Integer;
+begin
+  Result := StrToIntDef(Trim(S), -1);
+  if (Result < 1) or (Result > 65535) then
+    Result := -1;
+end;
+
+// {code:GetPort}: sihirbazdaki deger; sessiz kurulumda /PORT=, onceki kurulum ya da varsayilan
+function GetPort(Param: String): String;
+var
+  P: Integer;
+begin
+  P := ParsePort(PortPage.Values[0]);
+  if P < 0 then
+    P := {#DefaultPort};
+  Result := IntToStr(P);
+end;
+
+procedure InitializeWizard;
+begin
+  PortPage := CreateInputQueryPage(wpWelcome,
+    'Port', 'Panel hangi portta calissin?',
+    'Panel tarayicida http://localhost:<port> adresinden acilir; agdaki diger PC''ler ' +
+    'http://<bu-pc-ip>:<port> ile baglanir. Emin degilseniz 8989 olarak birakin.');
+  PortPage.Add('Port (1-65535):', False);
+  PortPage.Values[0] := ExpandConstant('{param:PORT|' + GetPreviousData('Port', '{#DefaultPort}') + '}');
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if CurPageID = PortPage.ID then
+  begin
+    if ParsePort(PortPage.Values[0]) < 0 then
+    begin
+      MsgBox('Gecersiz port. 1 ile 65535 arasinda bir sayi girin (varsayilan 8989).', mbError, MB_OK);
+      Result := False;
+    end else
+      PortPage.Values[0] := IntToStr(ParsePort(PortPage.Values[0]));
+  end;
+end;
+
+procedure RegisterPreviousData(PreviousDataKey: Integer);
+begin
+  SetPreviousData(PreviousDataKey, 'Port', GetPort(''));
+end;
+
 // Guncelleme: dosyalar kopyalanmadan once calisan servisi durdur (exe kilitli kalmasin).
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
