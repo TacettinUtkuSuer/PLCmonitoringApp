@@ -196,6 +196,9 @@ def build_kwargs(fn, path_vars, query, body):
         if inspect.isclass(ann) and issubclass(ann, BaseModel):
             kwargs[name] = ann(**(body or {}))
             continue
+        if (ann is dict or typing.get_origin(ann) is dict) and isinstance(body, dict):
+            kwargs[name] = body                       # payload: Dict[str, Any] (preset kaydi)
+            continue
         if name in query:
             raw = query[name][0]
             if ann is int:

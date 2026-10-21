@@ -643,6 +643,8 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
 .psep .ln{flex:1;height:1px;background:#3a2b12}
 .psep .xbtn{color:var(--warn)}
 .scard.pre{border-style:dashed;background:#191a1b}
+.scard.dropb{box-shadow:inset 0 3px 0 var(--accent)}
+.scard.dropa{box-shadow:inset 0 -3px 0 var(--accent)}
 .scard.pre .nm{font-style:italic}
 .ptag{font-size:9px;color:var(--warn);border:1px solid #3a2b12;border-radius:3px;padding:0 3px;flex:none}
 
@@ -1539,7 +1541,12 @@ window.makeSensorCard = function (s, isPreset) {
 
   card.addEventListener('dragstart', function (ev) {
     ev.dataTransfer.setData('text/plain', sid);
-    ev.dataTransfer.effectAllowed = 'copy';
+    ev.dataTransfer.effectAllowed = 'copyMove';      /* grafige kopya, havuzda tasima */
+    window.POOLDRAG = { sid: sid, pre: !!isPreset };
+  });
+  card.addEventListener('dragend', function () {
+    window.POOLDRAG = null;
+    window.clearDropMarks();
   });
 
   /* --- Esik kutulari --------------------------------------------------------- */
@@ -1649,12 +1656,12 @@ window.fxPreview = function (card, text, selfId) {
 
   var c = window.fxCompile(text.slice(1));
   if (c.err) { set('! ' + c.err, 'bad'); return; }
-  var miss = c.deps.filter(function (d) {
-    return !window.poolFind(d) && !Object.prototype.hasOwnProperty.call(window.FXCONST, d);
-  });
-  if (miss.length) { set('havuzda yok: ' + miss.join(', '), 'bad'); return; }
+  var bad = window.fxBadNames(c.deps);
+  if (bad.length) { set('gecersiz ad: ' + bad.join(', '), 'bad'); return; }
   if (selfId && window.fxWouldCycle(selfId, c.deps)) { set('dongusel formul', 'bad'); return; }
-  set('tamam -- kullanilan: ' + (c.deps.length ? c.deps.join(', ') : 'yalnizca sabitler'), 'ok');
+  var ext = window.fxExternal(c.deps);
+  set('tamam -- kullanilan: ' + (c.deps.length ? c.deps.join(', ') : 'yalnizca sabitler') +
+      (ext.length ? '  (InfluxDB\'den: ' + ext.join(', ') + ')' : ''), 'ok');
 };
 
 /* ======================================================================================
@@ -1712,6 +1719,8 @@ window.newSensorCard = function () {
   window.renderPool(true);
   var el = document.querySelector('#poolList .scard.draft .nmi');
   if (el) { el.focus(); el.scrollIntoView({ block: 'nearest' }); }
+  var lst = document.getElementById('poolList');
+  if (lst) lst.scrollTop = 0;
 };
 
 window.cancelDraft = function () {
@@ -1809,6 +1818,12 @@ window.makeDraftCard = function () {
 
 /* ---- Mevcut bir arayuz kartinin ad / birim / kaynak satirini degistirme --------- */
 window.renameCard = function (sid, name, unit) {
+  /* HESAP karti: degisken adi (CALC_<AD>) kart adini izler; bu adi kullanan
+     diger formuller de ayni anda guncellenir. */
+  if (window.isCalc(sid)) {
+    var want = window.calcIdFor(name, sid);
+    if (want !== sid) return window.changeCardId(sid, want, name, unit, undefined, true);
+  }
   if (window.isPresetOnly(sid)) {
     var s = window.poolFind(sid);
     if (s) { s.name = String(name || '').trim(); s.unit = String(unit || '').trim(); }
@@ -1858,35 +1873,108 @@ window.remapSeries = function (oldId, newId) {
   if (window.ALARM[oldId]) { window.ALARM[newId] = true; delete window.ALARM[oldId]; }
 };
 
-/* Kimligi degisen kart: yenisini yaz, eskisini sil, baglantilari tasi */
-window.replaceCard = function (oldId, newId, name, unit, exprText) {
+/* Hesap kartinin adina gore olmasi gereken degisken adi. Ad bos ya da ayni
+   kimlige denk geliyorsa (CALC_GUC, CALC_GUC_2 ...) mevcut kimlik korunur. */
+window.calcIdFor = function (name, selfId) {
+  var slug = window.slugId(name);
+  if (!slug) return selfId;
+  var base = 'CALC_' + slug;
+  if (selfId === base || new RegExp('^' + base + '_\\d+$').test(selfId)) return selfId;
+  return window.newCalcId(name);
+};
+
+/* Kartin KIMLIGINI degistirir: sunucuda yerinde (sira, esik, kaynak korunur),
+   grafik serileri / renk / alarm baglantilari yeni kimlige tasinir.
+   exprText: undefined = formule dokunma, '' = formulu kaldir, '=...' = yeni formul.
+   rewrite : eski kimligi kullanan diger formuller de yeni ada cevrilsin mi. */
+window.changeCardId = function (oldId, newId, name, unit, exprText, rewrite) {
   if (newId !== oldId && window.poolFind(newId)) {
     window.showError('"' + newId + '" zaten havuzda.');
     window.renderPool(true);
-    return;
+    return Promise.resolve();
   }
-  var lim = window.limitsOf(oldId);
+  var preOnly = window.isPresetOnly(oldId);
+  var rec = window.poolFind(oldId);
+  var srvExprs = {}, localBack = [];
+  if (rewrite && newId !== oldId) {
+    window.allSensors().forEach(function (s) {
+      if (s.sensor_id === oldId || !s.expr) return;
+      var ne = window.fxRename(s.expr, oldId, newId);
+      if (ne === s.expr) return;
+      if (window.isPresetOnly(s.sensor_id)) { localBack.push([s, s.expr]); s.expr = ne; }
+      else srvExprs[s.sensor_id] = ne;
+    });
+  }
+  var oldRec = rec ? { sensor_id: rec.sensor_id, name: rec.name, unit: rec.unit,
+                       expr: rec.expr, manual: rec.manual } : null;
+
+  /* Yerelde hemen uygula: aradaki bir havuz yayini seriyi "havuzda yok" diye silmesin */
   window.SCOLORS[newId] = window.colorFor(oldId);
   window.persistColors();
-
-  window.pushSensor(newId, name, unit, exprText, lim).then(function () {
-    window.remapSeries(oldId, newId);
-    if (window.isPresetOnly(oldId)) {
-      window.PPOOL = window.PPOOL.filter(function (s) { return s.sensor_id !== oldId; });
-      window.renderPool(true);
-      return null;
+  if (rec) {
+    rec.sensor_id = newId;
+    rec.name = String(name || '').trim();
+    rec.unit = String(unit || '').trim();
+    if (exprText !== undefined) {
+      rec.expr = String(exprText || '').replace(/^=/, '').trim() || null;
+      rec.manual = true;
     }
-    return fetch('/api/sensors/' + encodeURIComponent(oldId), { method: 'DELETE' })
-      .then(function (r) { return r.json(); })
-      .then(function (j) { if (j && j.sensors) window.applyPool(j.sensors); });
-  }).then(function () {
+  }
+  Object.keys(srvExprs).forEach(function (k) {
+    var o = window.poolFind(k);
+    if (o) o.expr = srvExprs[k];
+  });
+  window.remapSeries(oldId, newId);
+
+  var done = function () {
     window.renderPool(true);
+    window.syncChartsWithPool();
     window.refreshAll(false);
     window.alarmWatch();
+  };
+
+  if (preOnly) {
+    /* Preset karti yalnizca bu ekranda: sunucudaki kartlarin formulleri ayrica yazilir */
+    var jobs = Object.keys(srvExprs).map(function (k) {
+      return fetch('/api/sensors/' + encodeURIComponent(k) + '/expr?expr=' + encodeURIComponent(srvExprs[k]));
+    });
+    done();
+    return Promise.all(jobs).catch(function (e) { window.showError('Formul kaydedilemedi: ' + e.message); });
+  }
+
+  return fetch('/api/sensors/' + encodeURIComponent(oldId) + '/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      to: newId, name: String(name || '').trim(), unit: String(unit || '').trim(),
+      expr: exprText === undefined ? null : String(exprText || ''),
+      exprs: srvExprs
+    })
+  }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+      return j;
+    });
+  }).then(function (j) {
+    if (j && j.sensors) window.applyPool(j.sensors);
+    done();
   }).catch(function (e) {
+    /* geri al: yerel degisiklikleri eski haline dondur, sunucudan taze havuz cek */
+    if (rec && oldRec) { for (var k in oldRec) rec[k] = oldRec[k]; }
+    localBack.forEach(function (p) { p[0].expr = p[1]; });
+    window.remapSeries(newId, oldId);
     window.showError('Kart guncellenemedi: ' + e.message);
-    window.renderPool(true);
+    return fetch('/api/sensors').then(function (r) { return r.json(); })
+      .then(function (j) { if (j && j.sensors) window.applyPool(j.sensors); done(); });
   });
+};
+
+/* Kaynak satiri baska bir alana / formule gecti: kimlik degisir (yerinde) */
+window.replaceCard = function (oldId, newId, name, unit, exprText) {
+  /* Eski kimlik bir HESAP kimligiyse kartin kendisini gosterir: onu kullanan
+     formuller yeni kimlige tasinir. Duz InfluxDB alaniysa (P1) formuller o
+     ALANI kastediyordur, dokunulmaz. */
+  return window.changeCardId(oldId, newId, name, unit, exprText, window.isCalc(oldId));
 };
 
 /* fx satiri degisti: duz ad <-> formul gecisleri dahil hepsini burasi karara baglar */
@@ -2006,6 +2094,9 @@ window.renderPool = function (force) {
     return;
   }
 
+  /* Yeni kart taslagi listenin EN USTUNDE acilir (kaydedilince de orada kalir) */
+  if (window.DRAFT) list.appendChild(window.makeDraftCard());
+
   window.POOL.forEach(function (s) { list.appendChild(window.makeSensorCard(s, false)); });
 
   if (extra.length) {
@@ -2018,10 +2109,76 @@ window.renderPool = function (force) {
     extra.forEach(function (s) { list.appendChild(window.makeSensorCard(s, true)); });
   }
 
-  if (window.DRAFT) list.appendChild(window.makeDraftCard());
-
   /* kartlar yeniden uretildi -> aktif alarmlarin yanip sonmesini geri uygula */
   window.applyAlarmClasses();
+};
+
+/* ---- KART SIRALAMA (surukle-birak) ----------------------------------------------
+   Kart grafige birakilirsa seri eklenir (kopya); havuzda baska bir kartin ustune
+   birakilirsa yeri degisir. Webhook havuzunun sirasi sunucuda tutulur (tum
+   ekranlar ayni sirayi gorur); preset havuzu yalnizca bu ekranda siralanir. */
+window.POOLDRAG = null;
+
+window.clearDropMarks = function () {
+  var els = document.querySelectorAll('#poolList .dropb, #poolList .dropa');
+  for (var i = 0; i < els.length; i++) els[i].classList.remove('dropb', 'dropa');
+};
+
+window.initPoolReorder = function () {
+  var list = document.getElementById('poolList');
+  if (!list || list._reorder) return;
+  list._reorder = true;
+  var target = function (ev) {
+    var d = window.POOLDRAG;
+    if (!d || !ev.target || !ev.target.closest) return null;
+    var el = ev.target.closest('.scard[data-sid]');
+    if (!el || el.classList.contains('pre') !== d.pre) return null;   /* bolumler arasi yok */
+    var r = el.getBoundingClientRect();
+    return { el: el, sid: el.getAttribute('data-sid'), after: ev.clientY > r.top + r.height / 2 };
+  };
+  list.addEventListener('dragover', function (ev) {
+    var t = target(ev);
+    if (!t) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'move';
+    window.clearDropMarks();
+    if (t.sid !== window.POOLDRAG.sid) t.el.classList.add(t.after ? 'dropa' : 'dropb');
+  });
+  list.addEventListener('dragleave', function (ev) {
+    if (!ev.relatedTarget || !list.contains(ev.relatedTarget)) window.clearDropMarks();
+  });
+  list.addEventListener('drop', function (ev) {
+    var t = target(ev);
+    window.clearDropMarks();
+    if (!t) return;
+    ev.preventDefault();
+    window.movePoolCard(window.POOLDRAG.sid, t.sid, t.after, window.POOLDRAG.pre);
+  });
+};
+
+window.movePoolCard = function (sid, refSid, after, pre) {
+  if (sid === refSid) return;
+  var arr = pre ? window.PPOOL : window.POOL;
+  var idx = function (id) {
+    for (var i = 0; i < arr.length; i++) if (arr[i].sensor_id === id) return i;
+    return -1;
+  };
+  var from = idx(sid);
+  if (from < 0 || idx(refSid) < 0) return;
+  var item = arr.splice(from, 1)[0];
+  var to = idx(refSid);
+  arr.splice(after ? to + 1 : to, 0, item);
+  window.renderPool(true);
+  if (pre) return;
+  window.saveOrder(arr.map(function (s) { return s.sensor_id; }));
+};
+
+/* Webhook havuzunun sirasini sunucuya yazar (tum ekranlara yayilir) */
+window.saveOrder = function (ids) {
+  return fetch('/api/sensors/order?ids=' + encodeURIComponent(ids.join(',')), { method: 'POST' })
+    .then(function (r) { return r.json(); })
+    .then(function (j) { if (j && j.sensors) window.applyPool(j.sensors); })
+    .catch(function (e) { window.showError('Sira kaydedilemedi: ' + e.message); });
 };
 
 window.poolFind = function (sensorId) {
@@ -2616,16 +2773,72 @@ window.fxFillValues = function (values, order) {
   window.fxSnapPush(values);
 };
 
+/* Formulde gecen ama havuzda KART OLMAYAN adlar: InfluxDB alani sayilir ve dogrudan
+   okunur (fxPlan bunlari yaprak olarak ceker). Kart eklemek GEREKMEZ. */
+window.fxExternal = function (deps) {
+  return (deps || []).filter(function (d) {
+    return !window.poolFind(d) && !Object.prototype.hasOwnProperty.call(window.FXCONST, d);
+  });
+};
+/* Havuzda olmayan ve InfluxDB alan adi olarak da gecersiz adlar (ornek: [A B]) */
+window.fxBadNames = function (deps) {
+  return window.fxExternal(deps).filter(function (d) { return !window.validSid(d); });
+};
+
+/* Formul metninde bir degisken adini (oldId) yenisiyle degistirir. Sozcuk
+   cozumleyiciyle ayni kurallar: fonksiyon adlarina, sayilara ve baska adlarin
+   PARCALARINA dokunulmaz; [KOSELI] yazimi da yakalanir. */
+window.fxRename = function (src, oldId, newId) {
+  src = String(src || '');
+  var out = '', i = 0, n = src.length, c, st, w, end, j;
+  var dig = function (ch) { return ch >= '0' && ch <= '9'; };
+  var plain = /^[A-Za-z_][A-Za-z0-9_]*$/.test(newId);
+  while (i < n) {
+    c = src.charAt(i);
+    if (dig(c) || (c === '.' && dig(src.charAt(i + 1)))) {
+      st = i;
+      while (i < n && dig(src.charAt(i))) i++;
+      if (src.charAt(i) === '.') { i++; while (i < n && dig(src.charAt(i))) i++; }
+      if (src.charAt(i) === 'e' || src.charAt(i) === 'E') {
+        var save = i; i++;
+        if (src.charAt(i) === '+' || src.charAt(i) === '-') i++;
+        if (dig(src.charAt(i))) { while (i < n && dig(src.charAt(i))) i++; } else { i = save; }
+      }
+      out += src.slice(st, i);
+      continue;
+    }
+    if (c === '[') {
+      end = src.indexOf(']', i + 1);
+      if (end < 0) { out += src.slice(i); break; }
+      out += (src.slice(i + 1, end).trim() === oldId) ? ('[' + newId + ']') : src.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      st = i;
+      while (i < n && /[A-Za-z0-9_.]/.test(src.charAt(i))) i++;
+      w = src.slice(st, i);
+      while (w.length > 1 && w.charAt(w.length - 1) === '.') { w = w.slice(0, -1); i--; }
+      j = i;
+      while (j < n && /\s/.test(src.charAt(j))) j++;
+      var isCall = src.charAt(j) === '(';
+      out += (w === oldId && !isCall) ? (plain ? newId : '[' + newId + ']') : w;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+};
+
 /* Kart altinda gosterilecek durum satiri */
 window.fxStatus = function (sid) {
   var ex = window.exprOf(sid);
   if (!ex) return { txt: '', cls: '' };
   var c = window.fxCompile(ex);
   if (c.err) return { txt: '! ' + c.err, cls: 'bad' };
-  var miss = c.deps.filter(function (d) {
-    return !window.poolFind(d) && !Object.prototype.hasOwnProperty.call(window.FXCONST, d);
-  });
-  if (miss.length) return { txt: '! havuzda yok: ' + miss.join(', '), cls: 'bad' };
+  var bad = window.fxBadNames(c.deps);
+  if (bad.length) return { txt: '! gecersiz ad: ' + bad.join(', '), cls: 'bad' };
   if (window.fxWouldCycle(sid, c.deps)) return { txt: '! dongusel formul', cls: 'bad' };
   var v = window.LASTVAL[sid];
   if (v == null || !isFinite(v)) return { txt: sid + ' = (veri bekleniyor)', cls: '' };
@@ -4092,6 +4305,17 @@ window.loadPreset = function (name) {
     /* 2) Havuz -- SADECE bu ekrana, gecici olarak. Sunucuya ASLA yazilmaz. */
     window.setPresetPool(cfg.pool || []);
 
+    /* 2b) Kayittaki KART SIRASI: preset kartlari zaten o sirada gelir; ayni kartlar
+       webhook havuzunda da varsa onlar da kaydedildigi sirayla dizilir. */
+    var inPool = {};
+    window.POOL.forEach(function (s) { inPool[s.sensor_id] = 1; });
+    var want = (cfg.pool || []).map(function (it) {
+      return String(it.influx_name || it.sensor_id || '').trim();
+    }).filter(function (id) { return inPool[id]; });
+    var now = window.POOL.map(function (s) { return s.sensor_id; })
+      .filter(function (id) { return want.indexOf(id) >= 0; });
+    if (want.length > 1 && want.join(',') !== now.join(',')) window.saveOrder(want);
+
     /* 3) Grafik yerlesimi */
     window.applyPresetCharts(cfg.charts);
   }).catch(function (e) { window.showError('Preset yuklenemedi: ' + e.message); });
@@ -4179,6 +4403,7 @@ window.boot = function () {
   }
   window.loadColors();
   window.initGlobalPan();
+  window.initPoolReorder();
   document.addEventListener('keydown', function (e) {
     if (e.ctrlKey && e.shiftKey && (e.key === 'M' || e.key === 'm')) {
       e.preventDefault();
@@ -4329,13 +4554,16 @@ async def api_sensors() -> JSONResponse:
 def upsert_sensor(sid: str, name: str, unit: str,
                   amin: Any = KEEP, amax: Any = KEEP, expr: Any = KEEP,
                   manual: Any = KEEP,
-                  db: Any = KEEP, meas: Any = KEEP, url: Any = KEEP) -> bool:
+                  db: Any = KEEP, meas: Any = KEEP, url: Any = KEEP,
+                  top: bool = False) -> bool:
     """Havuza ekler/gunceller. True donerse YENI kayittir.
        amin/amax    = KEEP verilirse mevcut esik degerlerine DOKUNULMAZ.
        expr         = KEEP verilirse mevcut formule DOKUNULMAZ, None ise SILINIR.
        manual       = kart arayuzden olusturuldu (formul satiri gosterilir).
        db/meas/url  = sensor bazli kaynak; KEEP dokunmaz, None gecersiz kilmayi
-                      KALDIRIR (genel ayara doner). Ucu birbirinden bagimsizdir."""
+                      KALDIRIR (genel ayara doner). Ucu birbirinden bagimsizdir.
+       top          = YENI kayit listenin BASINA eklenir (arayuzden eklenen kartlar);
+                      HMI webhook'u ve preset yuklemesi sona ekler (sira korunur)."""
     for item in state["pool_sensors"]:
         if item["sensor_id"] == sid:
             if name:
@@ -4365,7 +4593,7 @@ def upsert_sensor(sid: str, name: str, unit: str,
             item.setdefault("url", None)
             item["ts"] = time.time()
             return False
-    state["pool_sensors"].append({
+    rec = {
         "sensor_id": sid, "name": name, "unit": unit,
         "amin": None if amin is KEEP else amin,
         "amax": None if amax is KEEP else amax,
@@ -4375,7 +4603,11 @@ def upsert_sensor(sid: str, name: str, unit: str,
         "meas": None if meas is KEEP else meas,
         "url": None if url is KEEP else url,
         "ts": time.time(),
-    })
+    }
+    if top:
+        state["pool_sensors"].insert(0, rec)
+    else:
+        state["pool_sensors"].append(rec)
     return True
 
 
@@ -4399,7 +4631,8 @@ async def _add_sensor(sid: str, name: str, unit: str,
                             parse_limit(raw_min), parse_limit(raw_max), expr, manual,
                             parse_source(raw_db),
                             parse_source(raw_meas),
-                            parse_source(raw_url, is_url=True))
+                            parse_source(raw_url, is_url=True),
+                            top=manual is True)
     await hub.broadcast(pool_payload())
     rec = next((s for s in state["pool_sensors"] if s["sensor_id"] == sid), {})
     eff_url, eff_db, eff_meas = sensor_source(sid)
@@ -4625,6 +4858,65 @@ async def api_delete_sensor(sensor_id: str) -> JSONResponse:
         "removed": before - len(state["pool_sensors"]),
         "sensors": state["pool_sensors"],
     })
+
+
+@app.get("/api/sensors/order")
+@app.post("/api/sensors/order")
+async def api_order_sensors(ids: str = "") -> JSONResponse:
+    """Sol paneldeki kart SIRASI (surukle-birak). ids=A,B,C verilen sirayla basa
+       dizilir; listede olmayan kartlar mevcut siralariyla arkaya eklenir."""
+    wanted = [s.strip() for s in ids.split(",") if s.strip()]
+    by_id = {s["sensor_id"]: s for s in state["pool_sensors"]}
+    head = []
+    for sid in wanted:
+        rec = by_id.pop(sid, None)
+        if rec is not None:
+            head.append(rec)
+    tail = [s for s in state["pool_sensors"] if s["sensor_id"] in by_id]
+    state["pool_sensors"] = head + tail
+    await hub.broadcast(pool_payload())
+    return JSONResponse({"ok": True, "sensors": state["pool_sensors"]})
+
+
+class RenameIn(BaseModel):
+    to: str = ""
+    name: Optional[str] = None
+    unit: Optional[str] = None
+    expr: Optional[str] = None                   # None = formule dokunma, "" = sil
+    exprs: Optional[Dict[str, str]] = None       # baska kartlarin GUNCELLENMIS formulleri
+
+
+@app.post("/api/sensors/{sensor_id}/rename")
+async def api_rename_sensor(sensor_id: str, payload: RenameIn) -> JSONResponse:
+    """Kartin KIMLIGINI yerinde degistirir (sira, esik, kaynak korunur).
+       Hesap karti adi degisince degisken adi da degisir; bu kimligi kullanan
+       diger formuller arayuzde yeniden yazilip 'exprs' ile AYNI istekte gelir,
+       boylece tum ekranlar tek bir guncelleme gorur."""
+    new_id = (payload.to or "").strip()
+    if not valid_sensor(sensor_id) or not valid_sensor(new_id):
+        raise HTTPException(status_code=400, detail="Gecersiz ad (izinli: A-Z a-z 0-9 _ . -)")
+    rec = next((s for s in state["pool_sensors"] if s["sensor_id"] == sensor_id), None)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Sensor havuzda yok.")
+    if new_id != sensor_id and any(s["sensor_id"] == new_id for s in state["pool_sensors"]):
+        raise HTTPException(status_code=409, detail='"{0}" zaten havuzda.'.format(new_id))
+    rec["sensor_id"] = new_id
+    if payload.name is not None:
+        rec["name"] = payload.name.strip()
+    if payload.unit is not None:
+        rec["unit"] = payload.unit.strip()
+    expr = parse_expr(payload.expr)
+    if expr is not KEEP:
+        rec["expr"] = expr
+        rec["manual"] = True
+    rec["ts"] = time.time()
+    for sid, text in (payload.exprs or {}).items():
+        other = next((s for s in state["pool_sensors"] if s["sensor_id"] == sid), None)
+        parsed = parse_expr(text)
+        if other is not None and parsed is not KEEP:
+            other["expr"] = parsed
+    await hub.broadcast(pool_payload())
+    return JSONResponse({"ok": True, "sensor_id": new_id, "sensors": state["pool_sensors"]})
 
 
 @app.post("/api/sensors/clear")

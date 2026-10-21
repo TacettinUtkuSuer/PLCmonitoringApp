@@ -275,13 +275,25 @@ const near = (a, b, eps) => a != null && b != null && Math.abs(a - b) < (eps || 
   chk('yeni formul grafige yansidi (A*3)',   mulCheck.checked > 5 && mulCheck.bad === 0, mulCheck);
 
   console.log('\n=== B) Ad degistirme ===');
+  const posBefore = pool.findIndex(s => s.sensor_id === cid);
   await p.locator('[data-sid="' + cid + '"] .nmi').fill('Yeni Ad');
   await p.locator('[data-sid="' + cid + '"] .nmi').press('Enter');
   await sleep(600);
   pool = await p.evaluate(() => fetch('/api/sensors').then(r => r.json()).then(j => j.sensors));
-  chk('ad degisti',                          pool.filter(s => s.sensor_id === cid)[0].name === 'Yeni Ad');
-  chk('ad degisince formul korundu',         pool.filter(s => s.sensor_id === cid)[0].expr === 'MOCK_AA * 3');
-  chk('ad degisince kimlik korundu',         (await p.locator('[data-sid="' + cid + '"]').count()) === 1);
+  const ren = pool.filter(s => s.sensor_id === 'CALC_YENI_AD')[0];
+  chk('ad degisince degisken adi da degisti (CALC_YENI_AD)', !!ren, pool.map(s => s.sensor_id));
+  chk('ad degisti',                          ren && ren.name === 'Yeni Ad');
+  chk('ad degisince formul korundu',         ren && ren.expr === 'MOCK_AA * 3');
+  chk('eski degisken adi havuzdan kalkti',   !pool.some(s => s.sensor_id === cid));
+  chk('kart yerinde kaldi (sira korundu)',   pool.findIndex(s => s.sensor_id === 'CALC_YENI_AD') === posBefore);
+  chk('grafik serisi yeni ada tasindi',
+      (await p.evaluate(() => window.CHARTS[0].series.map(s => s.sensor_id))).indexOf('CALC_YENI_AD') >= 0);
+
+  /* eski ada geri don: asagidaki testler CALC_TOPLAM_GUC kimligini kullanir */
+  await p.locator('[data-sid="CALC_YENI_AD"] .nmi').fill('Toplam Guc');
+  await p.locator('[data-sid="CALC_YENI_AD"] .nmi').press('Enter');
+  await sleep(600);
+  chk('geri adlandirinca kimlik geri geldi', (await p.locator('[data-sid="' + cid + '"]').count()) === 1);
 
   console.log('\n=== B) Ic ice hesap sensoru ===');
   await p.click('#newBtn');
@@ -292,6 +304,21 @@ const near = (a, b, eps) => a != null && b != null && Math.abs(a - b) < (eps || 
   const cid2 = 'CALC_IKINCI_KAT';
   chk('hesap sensoru baska hesabi kullanabilir',
       (await p.locator('[data-sid="' + cid2 + '"]').count()) === 1);
+
+  console.log('\n=== B) Ad degisince onu kullanan formuller guncellenir ===');
+  await p.locator('[data-sid="' + cid + '"] .nmi').fill('Toplam Guc Iki');
+  await p.locator('[data-sid="' + cid + '"] .nmi').press('Enter');
+  await sleep(700);
+  pool = await p.evaluate(() => fetch('/api/sensors').then(r => r.json()).then(j => j.sensors));
+  chk('baska karttaki formul yeni adi kullaniyor',
+      (pool.filter(s => s.sensor_id === cid2)[0] || {}).expr === 'CALC_TOPLAM_GUC_IKI + 100',
+      pool.filter(s => s.sensor_id === cid2)[0]);
+  await p.locator('[data-sid="CALC_TOPLAM_GUC_IKI"] .nmi').fill('Toplam Guc');
+  await p.locator('[data-sid="CALC_TOPLAM_GUC_IKI"] .nmi').press('Enter');
+  await sleep(700);
+  pool = await p.evaluate(() => fetch('/api/sensors').then(r => r.json()).then(j => j.sensors));
+  chk('geri adlandirinca formul de geri dondu',
+      (pool.filter(s => s.sensor_id === cid2)[0] || {}).expr === 'CALC_TOPLAM_GUC + 100');
 
   await p.evaluate((id2) => { window.addSeries(1, id2); }, cid2);
   await p.evaluate(() => window.fetchChart(window.CHARTS[1], true));
