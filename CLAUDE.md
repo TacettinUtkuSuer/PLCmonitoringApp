@@ -32,7 +32,7 @@ Endüstriyel test tezgâhı için canlı izleme paneli. Tek dosya: `main.py` (~4
 
 `influx_url` (varsayılan `http://10.10.2.6:8086`), `db` (`lc_100`), `measurement` (`telemetry`), `username`, `password`, `refresh_ms` (min 250).
 Arayüzde "InfluxDB Bağlantı Ayarları" penceresinden değiştirilir. Bunlar **varsayılan** değerlerdir: her sensör kendi `influx_url` / `db` / `measurement` değerini taşıyabilir (üçü birbirinden bağımsız; boş olan genel ayardan gelir).
-`config.json` ve `presets.json` **asla repoya girmemeli** (şifre içerebilir) → `.gitignore`'da.
+`config.json`, `presets.json` ve `materials.json` **asla repoya girmemeli** (şifre içerebilir) → `.gitignore`'da.
 
 ## Sorgular
 
@@ -61,13 +61,21 @@ Formülde havuzda kartı **olmayan** bir ad (ör. `=P1 - P9`) hata değildir: In
 `ma` penceresi **örnek sayısıdır**: grafikte 1 örnek = 1 GROUP BY kovası, alarmda 1 örnek = 1 yoklama (`refresh_ms`). Pencere dolana kadar boş; penceredeki boşluklar atlanır; iç içe kullanılabilir.
 Low-pass filtre fonksiyonu yok; yumuşatma için `ma()` kullanılıyor.
 
+## Malzeme tabloları (`materials.json`, veri klasöründe; tüm PC'ler ortak)
+
+- Üst çubuk "Malzemeler" penceresi: CSV dosyası seç ya da yapıştır → sunucu doğrular (`parse_material_csv`) → kaydet. Değişiklik WS `{"type":"materials"}` ile tüm ekranlara gider.
+- CSV başlığı ve **zorunlu birimler**: `temp [degC], dens [kg/m3], cp [J/kg·K], dvis [Pa·s], cond [W/m·K]` (sütun sırası serbest; `;` ayraç + ondalık virgül kabul; birim karşılaştırması `_unit_key` ile `·`/`.`/`*`/boşluk/Excel bozulması `Â·` toleranslı). Birim dönüşümü yapılmaz.
+- Formülde `AD_dens(x)`, `AD_cp(x)`, `AD_dvis(x)`, `AD_cond(x)` (büyük/küçük harf önemsiz; `x` sayı, sensör ya da ifade). `temp` sütununda doğrusal ara değer (`matInterp`); tablo aralığı dışında sonuç **boş**. Malzeme yoksa derleme hatası "Malzeme bulunamadı". Malzeme listesi değişince `FXCACHE` temizlenir.
+- Ad: harfle başlar, `A-Z a-z 0-9 _`, en fazla 32. Aynı ad (harf farkı dahil) üzerine yazar.
+- Uçlar: `GET /api/materials`, `POST /api/materials/{ad}` (JSON `{csv, dry}`; `dry=true` sadece doğrular), `DELETE /api/materials/{ad}`.
+
 ## Testler (`tests/`)
 
 Ortamda FastAPI olmadığında çalışsın diye shim'ler kullanıldı:
 - `serve_test.py`: fastapi/pydantic/httpx/uvicorn için asgari shim kurar, **gerçek** `main.py`'yi stdlib http.server ile 8989'da servis eder. `python tests/serve_test.py [port]`
 - `stub.py`: arayüzü test etmek için sahte (eski) sunucu; `serve_test.py` tercih edin.
-- Python birim testleri: `python tests/test_backend.py` (67 test), `python tests/test_source.py` (47 test). Son durum: hepsi geçiyor.
-- Tarayıcı testleri (Node + Playwright, sunucu 8989'da açık olmalı): `test_ui.js`, `test_fx.js` (126), `test_ma.js` (34), `test_alarm_regress.js` (25), `test_pool_order.js` (20, sıralama / yeni kart üstte / havuz dışı sensör / preset sırası), `test.js`. Bilinen: `test_ui.js` alarm zamanlaması bölümünde ve `test.js` 7. bölümde önceden beri kalan (zamanlamaya bağlı) hatalar var. `shot*.js` ekran görüntüsü alır → `tests/out/`.
+- Python birim testleri: `python tests/test_backend.py` (84 test), `python tests/test_source.py` (47 test). Son durum: hepsi geçiyor.
+- Tarayıcı testleri (Node + Playwright, sunucu 8989'da açık olmalı): `test_ui.js`, `test_fx.js` (126), `test_ma.js` (34), `test_alarm_regress.js` (25), `test_pool_order.js` (20, sıralama / yeni kart üstte / havuz dışı sensör / preset sırası), `test_materials.js` (31; WebSocket kontrolü olduğu için **gerçek** `python main.py` ile çalıştırın, shim WS desteklemez), `test.js`. Bilinen: `test_ui.js` alarm zamanlaması bölümünde ve `test.js` 7. bölümde önceden beri kalan (zamanlamaya bağlı) hatalar var. `shot*.js` ekran görüntüsü alır → `tests/out/`.
 - `demo_queries.py`: P1/T3/N5 için üretilen InfluxQL sorgularını yazdırır (InfluxDB'ye bağlanmaz).
 
 Gerçek FastAPI kuruluysa doğrudan `python main.py` ile de test edilebilir.

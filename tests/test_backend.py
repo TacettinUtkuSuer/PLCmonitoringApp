@@ -334,12 +334,54 @@ run(main.api_rename_sensor("CALC_Z", main.RenameIn(to="H9", expr="")))
 rec = next(s for s in main.state["pool_sensors"] if s["sensor_id"] == "H9")
 chk('rename + expr="" formulu kaldirir (duz alana donus)', rec["expr"] is None, rec)
 
+print('\n=== 8c) Malzeme tablolari (CSV) ===')
+import tempfile
+main.MATERIAL_PATH = os.path.join(tempfile.mkdtemp(), "materials.json")
+SU = ("temp [degC],dens [kg/m3],cp [J/kg\u00b7K],dvis [Pa\u00b7s],cond [W/m\u00b7K]\n"
+      "10,998.50,4189.05,0.001311964,0.5772\n0,998.73,4235.36,0.001779548,0.5567\n"
+      "20,996.95,4172.15,0.001004854,0.5959\n")
+rows = main.parse_material_csv(SU)
+chk('CSV okundu ve sicakliga gore siralandi', [r[0] for r in rows] == [0.0, 10.0, 20.0], rows)
+chk('sutunlar dogru eslesti', rows[0] == [0.0, 998.73, 4235.36, 0.001779548, 0.5567], rows[0])
+chk('Turkce Excel (; ve ondalik virgul) kabul',
+    main.parse_material_csv("temp [degC];dens [kg/m3];cp [J/kg.K];dvis [Pa.s];cond [W/m*K]\n"
+                            "0;998,73;1;2;3\n10;998,5;1;2;3")[0][1] == 998.73)
+chk('sutun sirasi serbest',
+    main.parse_material_csv("dens [kg/m3],temp [degC],cp [J/kg\u00b7K],dvis [Pa\u00b7s],cond [W/m\u00b7K]\n"
+                            "5,0,1,2,3\n6,10,1,2,3")[1][:2] == [10.0, 6.0])
+for label, bad, frag in [
+        ('yanlis birim reddedilir', SU.replace("[degC]", "[K]"), "degC"),
+        ('eksik sutun reddedilir', "temp [degC],dens [kg/m3]\n0,1\n1,2", "Eksik"),
+        ('sayi olmayan deger reddedilir', SU.replace("998.50", "abc"), "sayi degil"),
+        ('tekrar eden sicaklik reddedilir', SU.replace("20,996.95", "10,996.95"), "iki kez"),
+        ('tek veri satiri reddedilir', SU.split("\n")[0] + "\n0,1,2,3,4", "iki veri")]:
+    try:
+        main.parse_material_csv(bad)
+        chk(label, False)
+    except ValueError as e:
+        chk(label, frag in str(e), str(e))
+r = run(main.api_material_save("SU", main.MaterialIn(csv=SU, dry=True)))
+chk('dry=1 kaydetmez', r.content["ok"] and main.load_materials() == {})
+r = run(main.api_material_save("SU", main.MaterialIn(csv=SU)))
+chk('kaydedildi (dosyaya)', "SU" in main.load_materials() and len(main.load_materials()["SU"]["rows"]) == 3)
+run(main.api_material_save("su", main.MaterialIn(csv=SU)))
+chk('ayni ad (harf farki) uzerine yazar', list(main.load_materials().keys()) == ["su"])
+try:
+    run(main.api_material_save("2SU", main.MaterialIn(csv=SU)))
+    chk('rakamla baslayan ad reddedilir', False)
+except main.HTTPException as e:
+    chk('rakamla baslayan ad reddedilir', e.status_code == 400)
+run(main.api_material_delete("SU"))
+chk('silindi', main.load_materials() == {})
+
 print('\n=== 9) Rota kaydi ===')
 paths = {(m, p) for m, p, _ in main.app.routes}
 for m, p in [('GET', '/api/webhook/sensor'), ('POST', '/api/webhook/sensor'),
              ('GET', '/api/webhook/sensors'), ('GET', '/api/sensors/{sensor_id}/limits'),
              ('POST', '/api/sensors/{sensor_id}/limits'), ('GET', '/api/last'),
-             ('POST', '/api/sensors/order'), ('POST', '/api/sensors/{sensor_id}/rename')]:
+             ('POST', '/api/sensors/order'), ('POST', '/api/sensors/{sensor_id}/rename'),
+             ('GET', '/api/materials'), ('POST', '/api/materials/{name}'),
+             ('DELETE', '/api/materials/{name}')]:
     chk('rota kayitli: %s %s' % (m, p), (m, p) in paths)
 
 print('\n' + '=' * 62)
