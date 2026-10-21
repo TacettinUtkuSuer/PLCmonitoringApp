@@ -1,10 +1,14 @@
 name: Windows kurulum (kur.exe)
 
+# kur.exe YALNIZCA main'e push'ta, v* etiketinde ve elle baslatmada uretilir.
+# main'e acilan PR'larda sadece hizli Python testleri kosar (exe derlenmez).
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
-    branches: [main, "claude/**"]
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
@@ -22,6 +26,7 @@ jobs:
 
   build:
     needs: test
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
