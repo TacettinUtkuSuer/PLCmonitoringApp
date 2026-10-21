@@ -68,6 +68,11 @@ jobs:
               Start-Sleep 1
               try { $r = Invoke-WebRequest "http://127.0.0.1:$port/" -UseBasicParsing -TimeoutSec 5; $ok = ($r.StatusCode -eq 200) } catch {}
             }
+            if ($ok -and $port -eq 8989) {
+              # IPv6 (::1) da dinleniyor mu? Tarayici 'localhost'u once ::1 olarak dener.
+              try { $r6 = Invoke-WebRequest "http://[::1]:$port/" -UseBasicParsing -TimeoutSec 5; Write-Host "IPv6 ::1 OK ($($r6.StatusCode))" }
+              catch { Stop-Process $p -Force; throw "exe IPv6 ::1 uzerinden cevap vermedi: $_" }
+            }
             Stop-Process $p -Force
             Start-Sleep 1
             if (-not $ok) { Get-Content "$env:BENCHMONITOR_DATA\logs\benchmonitor.log" -ErrorAction SilentlyContinue; throw "exe $port portunda cevap vermedi" }
