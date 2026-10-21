@@ -38,6 +38,7 @@ Arayüzde "InfluxDB Bağlantı Ayarları" penceresinden değiştirilir. Bunlar *
 
 - Grafik `/api/data`: `SELECT last("P1") AS "P1", ... FROM "<meas>" WHERE time > now() - <range> GROUP BY time(<ivl>) fill(none)`
 - Canlı/alarm `/api/last`: `SELECT last("P1") AS "P1" FROM "<meas>" WHERE time > now() - 10m`
+- InfluxDB istekleri **tek, paylaşılan** `httpx.AsyncClient` ile yapılır (`http_client()`, keep-alive). Her sorguda yeni istemci açmak ~50 ms sürüyor ve event loop'u bloke ediyordu (ölçüm: istek başına ort. 255 → 32 ms).
 - Aynı (url, db, measurement) üçlüsünü paylaşan sensörler tek sorguda; farklı kaynaklar ayrı sorgu, ortak zaman ekseninde birleştirilir. Bir kaynak düşerse diğerleri çalışır, hata `error` alanında döner.
 - `MOCK_*` sensörler InfluxDB'ye gitmez, sentetik dalga üretir.
 
@@ -89,7 +90,7 @@ GitHub Pages da olmaz: uygulama Python sunucusu, InfluxDB yerel ağda (HTTP, COR
 
 Hedef: çift tıklanan tek kurulum dosyası (`kur.exe`). Kimse yanlışlıkla kapatamamalı/silememeli.
 
-- **`main.py` (donmuş mod):** `sys.frozen` iken veri klasörü `C:\ProgramData\BenchMonitor` (`BENCHMONITOR_DATA` ortam değişkeniyle değiştirilebilir); `config.json`, `presets.json`, `logs\benchmonitor.log` (5 MB × 5 dönen) orada. `VENDOR_DIR` sırası: veri klasörü\vendor → exe yanı\vendor → `_MEIPASS`\vendor. Konsol yoksa (`FROZEN` ya da `stdout is None`) `print` + uvicorn logları dosyaya, `uvicorn.run(log_config=None, access_log=False)`. `python main.py` davranışı değişmedi.
+- **`main.py` (donmuş mod):** `sys.frozen` iken veri klasörü `C:\ProgramData\BenchMonitor` (`BENCHMONITOR_DATA` ortam değişkeniyle değiştirilebilir); `config.json`, `presets.json`, `logs\benchmonitor.log` (5 MB × 5 dönen) orada. `VENDOR_DIR` sırası: veri klasörü\vendor → exe yanı\vendor → `_MEIPASS`\vendor. Sunucu `listen_sockets()` ile IPv4 `0.0.0.0` + varsa IPv6 `::` (V6ONLY) dinler: yalnız IPv4 dinlenince tarayıcı `localhost`'u önce `::1` dener ve Windows'ta her yeni bağlantıda gecikme olur; IPv6 kapalı makinede sessizce yalnız IPv4. Konsol yoksa (`FROZEN` ya da `stdout is None`) `print` + uvicorn logları dosyaya, `uvicorn.run(log_config=None, access_log=False)`. `python main.py` davranışı değişmedi.
 - **PyInstaller:** `--onedir --noconsole --collect-submodules uvicorn` (`--onefile` değil: servis her durdurulduğunda/öldürüldüğünde `%TEMP%\_MEI*` artığı bırakır, açılış yavaş, antivirüs daha çok takılır. Tek dosya ihtiyacını zaten `kur.exe` karşılıyor).
 - **Servis:** NSSM (`packaging\tools\nssm.exe`, `derle.bat` ilk seferde indirir, repoya girmez). Ad `BenchMonitor`, LocalSystem, otomatik başlar, çökerse 5 sn sonra yeniden başlar (+ `sc failure`).
 - **Kurulum:** `packaging/BenchMonitor.iss` (Inno Setup 6). Sihirbaz portu bir kez sorar (varsayılan 8989, güncellemede önceki değer; sessiz kurulumda `kur.exe /SILENT /PORT=9000`) → servise `BENCHMONITOR_PORT` olarak verilir. Program `C:\Program Files\BenchMonitor`, veri `C:\ProgramData\BenchMonitor` (Kullanıcılar sadece okur), güvenlik duvarı kuralı "Bench Monitor" (seçilen TCP port), masaüstü + Başlat menüsü `http://localhost:<port>` kısayolu. Portu sonradan değiştirmek: `kur.exe`'yi yeniden çalıştır. Güncellemede önce servis durur. Kaldırmada servis + güvenlik duvarı kuralı silinir, veri korunur.

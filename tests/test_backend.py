@@ -287,9 +287,11 @@ class _Boom(AsyncClient):
 
 
 hx.AsyncClient = _Boom
+main._HTTP["client"] = None          # paylasilan istemci yeniden kurulsun
 r = run(main.api_last(sensors="REAL_A"))
 chk('DB hatasi cokmeden error doner', 'error' in r.content and r.content["values"]["REAL_A"] is None, r.content)
 hx.AsyncClient = AsyncClient
+main._HTTP["client"] = None
 
 print('\n=== 8) Preset bulk esikleri tasir ===')
 reset()

@@ -20,6 +20,7 @@ import time
 import random
 import asyncio
 import threading
+import socket
 import sys
 import logging
 import logging.handlers
@@ -321,6 +322,23 @@ def build_influxql(sensors: List[str], range_key: str, interval: str, measuremen
     ).format(sel=selects, meas=measurement, rng=range_key, ivl=interval)
 
 
+_HTTP: Dict[str, Any] = {"client": None, "loop": None}
+
+
+def http_client() -> Any:
+    """TEK, paylasilan HTTP istemcisi (keep-alive). Her sorguda yeni istemci acmak
+       ~50 ms surer (sertifika deposu yuklenir; Windows'ta daha da uzun) ve bu sure
+       boyunca sunucu baska hicbir istege bakamaz; ustelik her sorgu InfluxDB'ye
+       yeni bir TCP baglantisi kurar. Grafik + alarm yoklamasi saniyede birkac
+       sorgu yaptigi icin bu, arayuzun belirgin sekilde yavaslamasina yol aciyordu."""
+    loop = asyncio.get_running_loop()
+    client = _HTTP["client"]
+    if client is None or _HTTP["loop"] is not loop or getattr(client, "is_closed", False):
+        client = httpx.AsyncClient(timeout=20.0)
+        _HTTP.update(client=client, loop=loop)
+    return client
+
+
 async def influx_query(query: str, base_url: Optional[str] = None,
                        db: Optional[str] = None) -> Dict[str, Any]:
     """base_url / db verilmezse genel ayar kullanilir (sensor bazli gecersiz
@@ -332,10 +350,9 @@ async def influx_query(query: str, base_url: Optional[str] = None,
     auth = None
     if cfg.get("username"):
         auth = (cfg.get("username") or "", cfg.get("password") or "")
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.get(url, params=params, auth=auth)
-        resp.raise_for_status()
-        return resp.json()
+    resp = await http_client().get(url, params=params, auth=auth)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def sensor_source(sid: str) -> Tuple[str, str, str]:
@@ -5697,6 +5714,35 @@ def setup_file_logging() -> None:
     sys.stderr = _LogStream(logging.getLogger("stderr"), logging.ERROR)
 
 
+def listen_sockets(port: int) -> List[socket.socket]:
+    """IPv4 (0.0.0.0) + varsa IPv6 (::). Yalnizca IPv4 dinlenirse tarayici
+       'localhost'u once ::1 olarak dener; Windows'ta reddedilen bu deneme her yeni
+       baglantida gecikme (300 ms .. 2 sn) yaratir. IPv6 soketi V6ONLY acilir ki
+       IPv4 soketiyle cakismasin."""
+    socks: List[socket.socket] = []
+    targets = [(socket.AF_INET, "0.0.0.0")]
+    if socket.has_ipv6:
+        targets.append((socket.AF_INET6, "::"))
+    for family, host in targets:
+        sock = None
+        try:
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            if sys.platform != "win32":      # Windows'ta REUSEADDR ayni portu ikinci surece de acar
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            sock.bind((host, port))
+            sock.set_inheritable(True)
+            socks.append(sock)
+        except OSError as exc:            # IPv6 kapali makinede soket hic olusmayabilir
+            if sock is not None:
+                sock.close()
+            if family == socket.AF_INET:
+                raise                          # IPv4 acilamiyorsa (port dolu) baslamasin
+            print("[NET] IPv6 dinlenemedi, yalnizca IPv4:", exc)
+    return socks
+
+
 if __name__ == "__main__":
     file_logging = FROZEN or sys.stdout is None or sys.stderr is None
     if file_logging:
@@ -5708,10 +5754,9 @@ if __name__ == "__main__":
         CONFIG["influx_url"], CONFIG["db"], CONFIG.get("measurement")))
     print(" Data     : {0}".format(BASE_DIR))
     print("=" * 78)
+    opts: Dict[str, Any] = {"host": "0.0.0.0", "port": port, "log_level": "info", "ws_ping_interval": 20}
     if file_logging:
         # log_config=None: uvicorn kendi (konsol) handler'larini kurmaz, kok logger'a akar.
         # access_log kapali: her yoklama bir satir olur, log dosyasini bogar.
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info", ws_ping_interval=20,
-                    log_config=None, access_log=False)
-    else:
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info", ws_ping_interval=20)
+        opts.update(log_config=None, access_log=False)
+    uvicorn.Server(uvicorn.Config(app, **opts)).run(sockets=listen_sockets(port))
