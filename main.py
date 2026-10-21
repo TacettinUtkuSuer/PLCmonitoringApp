@@ -599,6 +599,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
 }
 *{box-sizing:border-box}
 html,body{height:100%}
+/* Koyu kaydirma cubuklari (sol havuz, malzeme penceresi, ...). color-scheme tarayicinin
+   yerel kontrollerini de koyu cizer; webkit kurallari Chrome/Edge'de rengi esler. */
+:root{color-scheme:dark}
+*{scrollbar-width:thin;scrollbar-color:#3a4358 var(--bg)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:#3a4358;border-radius:5px;border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:#4d5874}
+::-webkit-scrollbar-corner{background:var(--bg)}
 body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.35 "Segoe UI",Roboto,Arial,sans-serif;overflow:hidden}
 button,select,input{font-family:inherit}
 

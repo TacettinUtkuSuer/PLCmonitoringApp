@@ -42,6 +42,11 @@ CloseApplications=no
 [Languages]
 Name: "tr"; MessagesFile: "compiler:Languages\Turkish.isl"
 
+[Messages]
+; Standart "...ve tum bilesenlerini kaldirmak istiyor musunuz?" metni veri de silinecek
+; gibi anlasiliyordu. Veri klasoru ([Dirs] uninsneveruninstall) HICBIR ZAMAN silinmez.
+ConfirmUninstall=%1 programi kaldirilacak.%n%nAyarlar, presetler ve malzeme tablolari (C:\ProgramData\BenchMonitor) SILINMEZ, oldugu gibi kalir; yeniden kurulunca aynen kullanilir.%n%nDevam edilsin mi?
+
 [Dirs]
 ; Veri klasoru: SYSTEM + Yoneticiler tam yetki, Kullanicilar sadece okur.
 Name: "{commonappdata}\BenchMonitor"; Flags: uninsneveruninstall
