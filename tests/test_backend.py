@@ -302,11 +302,44 @@ pool = {s["sensor_id"]: s for s in main.state["pool_sensors"]}
 chk('bulk esikleri yazar', pool["B1"]["amin"] == 1.0 and pool["B1"]["amax"] == 9.0, pool["B1"])
 chk('esiksiz bulk kaydi None', pool["B2"]["amin"] is None and pool["B2"]["amax"] is None)
 
+print('\n=== 8b) Kart sirasi / yeni kart en ustte / yerinde yeniden adlandirma ===')
+reset()
+for sid in ("H1", "H2", "H3"):
+    run(main.api_webhook_get(influx_name=sid))
+ids = lambda: [s["sensor_id"] for s in main.state["pool_sensors"]]
+chk('HMI webhook sona ekler', ids() == ["H1", "H2", "H3"], ids())
+run(main.api_webhook_get(influx_name="CALC_X", expr="H1*2", manual=1))
+chk('arayuz karti (manual) EN BASA eklenir', ids()[0] == "CALC_X", ids())
+run(main.api_webhook_get(influx_name="H3", name="guncel", manual=1))
+chk('mevcut karti guncellemek yerini DEGISTIRMEZ', ids()[-1] == "H3", ids())
+run(main.api_order_sensors(ids="H3,H1"))
+chk('order: verilenler basa, kalanlar arkaya', ids() == ["H3", "H1", "CALC_X", "H2"], ids())
+run(main.api_order_sensors(ids="YOK,H2"))
+chk('order: bilinmeyen ad yok sayilir', ids() == ["H2", "H3", "H1", "CALC_X"], ids())
+run(main.api_webhook_get(influx_name="CALC_Y", expr="CALC_X+1", manual=1))
+pos = ids().index("CALC_X")
+r = run(main.api_rename_sensor("CALC_X", main.RenameIn(to="CALC_Z", name="Zet", exprs={"CALC_Y": "CALC_Z+1"})))
+rec = next(s for s in main.state["pool_sensors"] if s["sensor_id"] == "CALC_Z")
+chk('rename: kimlik degisti', "CALC_X" not in ids() and "CALC_Z" in ids(), ids())
+chk('rename: sira korundu', ids().index("CALC_Z") == pos, ids())
+chk('rename: ad yazildi, formul korundu', rec["name"] == "Zet" and rec["expr"] == "H1*2", rec)
+chk('rename: baska kartin formulu ayni istekte guncellendi',
+    next(s for s in main.state["pool_sensors"] if s["sensor_id"] == "CALC_Y")["expr"] == "CALC_Z+1")
+try:
+    run(main.api_rename_sensor("CALC_Z", main.RenameIn(to="H1")))
+    chk('rename: var olan ada 409', False)
+except main.HTTPException as e:
+    chk('rename: var olan ada 409', e.status_code == 409)
+run(main.api_rename_sensor("CALC_Z", main.RenameIn(to="H9", expr="")))
+rec = next(s for s in main.state["pool_sensors"] if s["sensor_id"] == "H9")
+chk('rename + expr="" formulu kaldirir (duz alana donus)', rec["expr"] is None, rec)
+
 print('\n=== 9) Rota kaydi ===')
 paths = {(m, p) for m, p, _ in main.app.routes}
 for m, p in [('GET', '/api/webhook/sensor'), ('POST', '/api/webhook/sensor'),
              ('GET', '/api/webhook/sensors'), ('GET', '/api/sensors/{sensor_id}/limits'),
-             ('POST', '/api/sensors/{sensor_id}/limits'), ('GET', '/api/last')]:
+             ('POST', '/api/sensors/{sensor_id}/limits'), ('GET', '/api/last'),
+             ('POST', '/api/sensors/order'), ('POST', '/api/sensors/{sensor_id}/rename')]:
     chk('rota kayitli: %s %s' % (m, p), (m, p) in paths)
 
 print('\n' + '=' * 62)

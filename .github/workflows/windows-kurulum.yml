@@ -1,0 +1,84 @@
+name: Windows kurulum (kur.exe)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    branches: [main, "claude/**"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python tests/test_backend.py
+      - run: python tests/test_source.py
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: NSSM onbellek
+        uses: actions/cache@v4
+        with:
+          path: packaging/tools/nssm.exe
+          key: nssm-2.24-101-win64
+      - name: NSSM (Chocolatey; nssm.cc sik sik coker)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          if (Test-Path packaging\tools\nssm.exe) { exit 0 }
+          choco install nssm -y --no-progress
+          $f = Get-ChildItem C:\ProgramData\chocolatey\lib\nssm -Recurse -Filter nssm.exe | Where-Object { $_.FullName -match 'win64' } | Select-Object -First 1
+          if (-not $f) { throw 'choco paketinde win64 nssm.exe yok' }
+          New-Item -ItemType Directory -Force packaging\tools | Out-Null
+          Copy-Item $f.FullName packaging\tools\nssm.exe
+          Get-Item packaging\tools\nssm.exe
+      - name: Surum
+        id: v
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "ver=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT; else echo "ver=0.0.${GITHUB_RUN_NUMBER}" >> $GITHUB_OUTPUT; fi
+      - name: derle.bat
+        shell: cmd
+        run: derle.bat ${{ steps.v.outputs.ver }}
+      - name: Duman testi (varsayilan 8989 + BENCHMONITOR_PORT=9123)
+        shell: pwsh
+        run: |
+          $env:BENCHMONITOR_DATA = "$env:RUNNER_TEMP\bmdata"
+          foreach ($port in @(8989, 9123)) {
+            if ($port -eq 8989) { Remove-Item Env:BENCHMONITOR_PORT -ErrorAction SilentlyContinue } else { $env:BENCHMONITOR_PORT = "$port" }
+            $p = Start-Process dist\BenchMonitor\BenchMonitor.exe -PassThru
+            $ok = $false
+            for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
+              Start-Sleep 1
+              try { $r = Invoke-WebRequest "http://127.0.0.1:$port/" -UseBasicParsing -TimeoutSec 5; $ok = ($r.StatusCode -eq 200) } catch {}
+            }
+            Stop-Process $p -Force
+            Start-Sleep 1
+            if (-not $ok) { Get-Content "$env:BENCHMONITOR_DATA\logs\benchmonitor.log" -ErrorAction SilentlyContinue; throw "exe $port portunda cevap vermedi" }
+            Write-Host "port $port OK"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kur-${{ steps.v.outputs.ver }}
+          path: Output/kur.exe
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Output/kur.exe
