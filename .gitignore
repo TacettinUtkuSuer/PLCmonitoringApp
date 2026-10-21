@@ -1,6 +1,7 @@
 # Calisma verisi (sifre icerebilir) - ASLA repoya girmemeli
 config.json
 presets.json
+materials.json
 data/
 logs/
 

@@ -418,6 +418,100 @@ def preset_names() -> List[str]:
 
 
 # ==========================================================================================
+# 5c) MALZEME TABLOLARI  (materials.json -> TUM PC'ler ayni listeyi gorur)
+#     CSV: temp [degC], dens [kg/m3], cp [J/kg·K], dvis [Pa·s], cond [W/m·K]
+#     Formulde:  SU_dens(T1)  SU_cp(25)  SU_dvis(x)  SU_cond(x)  (tarayicida ara degerlenir)
+# ==========================================================================================
+
+MATERIAL_PATH = os.path.join(BASE_DIR, "materials.json")
+_MAT_LOCK = threading.Lock()
+MAT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
+# (sutun, ZORUNLU birim) -- birimler sabittir, donusum yapilmaz
+MAT_COLS: List[Tuple[str, str]] = [
+    ("temp", "degC"), ("dens", "kg/m3"), ("cp", "J/kg·K"), ("dvis", "Pa·s"), ("cond", "W/m·K"),
+]
+MAT_MAX_ROWS = 5000
+
+
+def _unit_key(unit: str) -> str:
+    """Birim karsilastirmasi: buyuk/kucuk harf, bosluk ve carpim isareti (· . * ya da
+       Excel'in bozdugu 'Â·') onemsiz. 'J/kg·K' -> 'j/kgk', 'Pa·s' -> 'pas'."""
+    return re.sub(r"[^a-z0-9/]", "", (unit or "").lower())
+
+
+def parse_material_csv(text: str) -> List[List[float]]:
+    """Malzeme CSV'sini dogrular, [[temp, dens, cp, dvis, cond], ...] (temp'e gore sirali) doner.
+       Hata durumunda ValueError (mesaj kullaniciya gosterilir)."""
+    lines = [ln.strip() for ln in (text or "").lstrip("\ufeff").splitlines() if ln.strip()]
+    if len(lines) < 3:
+        raise ValueError("En az bir baslik satiri ve iki veri satiri gerekir.")
+    head = lines[0]
+    delim = max([";", "\t", ","], key=head.count)
+    cells = [c.strip().strip('"') for c in head.split(delim)]
+    pos: Dict[str, int] = {}
+    for idx, cell in enumerate(cells):
+        m = re.match(r"^([A-Za-z]+)\s*\[(.*)\]$", cell)
+        if not m:
+            raise ValueError("Baslik hatali: '{0}' (bicim: ad [birim])".format(cell))
+        col, unit = m.group(1).lower(), m.group(2).strip()
+        want = dict(MAT_COLS).get(col)
+        if want is None:
+            raise ValueError("Bilinmeyen sutun: '{0}'".format(cell))
+        if _unit_key(unit) != _unit_key(want):
+            raise ValueError("'{0}' sutununun birimi [{1}] olmali, CSV'de [{2}]".format(col, want, unit))
+        if col in pos:
+            raise ValueError("Sutun iki kez var: '{0}'".format(col))
+        pos[col] = idx
+    missing = [c for c, _ in MAT_COLS if c not in pos]
+    if missing:
+        raise ValueError("Eksik sutun: " + ", ".join(missing))
+    rows: List[List[float]] = []
+    for no, line in enumerate(lines[1:], start=2):
+        parts = [c.strip().strip('"') for c in line.split(delim)]
+        if len(parts) != len(cells):
+            raise ValueError("{0}. satirda {1} deger var, {2} olmali".format(no, len(parts), len(cells)))
+        row = []
+        for col, _ in MAT_COLS:
+            raw = parts[pos[col]]
+            if delim != ",":
+                raw = raw.replace(",", ".")          # 998,73 (Turkce Excel)
+            try:
+                val = float(raw)
+            except ValueError:
+                raise ValueError("{0}. satir, {1}: sayi degil ('{2}')".format(no, col, parts[pos[col]]))
+            if not math.isfinite(val):
+                raise ValueError("{0}. satir, {1}: gecersiz sayi".format(no, col))
+            row.append(val)
+        rows.append(row)
+    if len(rows) > MAT_MAX_ROWS:
+        raise ValueError("En fazla {0} satir.".format(MAT_MAX_ROWS))
+    rows.sort(key=lambda r: r[0])
+    for a, b in zip(rows, rows[1:]):
+        if a[0] == b[0]:
+            raise ValueError("Ayni sicaklik iki kez var: {0} degC".format(a[0]))
+    return rows
+
+
+def load_materials() -> Dict[str, Any]:
+    try:
+        if os.path.exists(MATERIAL_PATH):
+            with open(MATERIAL_PATH, "r", encoding="utf-8") as fh:
+                disk = json.load(fh)
+            if isinstance(disk, dict):
+                return disk
+    except Exception as exc:  # bozuk dosya servisi asla oldurmesin
+        print("[MATERIAL] read error:", exc)
+    return {}
+
+
+def write_materials(data: Dict[str, Any]) -> None:
+    tmp = MATERIAL_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=1, ensure_ascii=False)
+    os.replace(tmp, MATERIAL_PATH)
+
+
+# ==========================================================================================
 # 6) WEBSOCKET HUB  (reactive pool -> all connected screens, no F5)
 # ==========================================================================================
 
@@ -461,6 +555,10 @@ def pool_payload() -> Dict[str, Any]:
 
 def preset_payload() -> Dict[str, Any]:
     return {"type": "presets", "names": preset_names()}
+
+
+def material_payload() -> Dict[str, Any]:
+    return {"type": "materials", "materials": load_materials()}
 
 
 # ==========================================================================================
@@ -657,6 +755,20 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
 .frow input{width:100%;padding:6px}
 .mfoot{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
 #mmsg{font-size:11px;color:var(--ok);min-height:14px}
+#matMask{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:900;align-items:center;justify-content:center}
+#matModal{background:var(--panel);border:1px solid var(--line);border-radius:6px;width:640px;max-width:94vw;
+  max-height:92vh;overflow:auto;padding:16px;font-size:12px}
+#matModal h3{margin:0 0 10px;font-size:14px}
+#matModal h4{margin:14px 0 6px;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+#matModal table{border-collapse:collapse;width:100%}
+#matModal th,#matModal td{border:1px solid var(--line);padding:3px 6px;text-align:left}
+#matModal th{color:var(--dim);font-weight:600}
+#matModal code{background:#0f131c;padding:1px 4px;border-radius:3px;color:var(--accent)}
+#matModal textarea{width:100%;min-height:90px;font-family:monospace;font-size:11px;background:#0f131c;
+  color:var(--txt);border:1px solid var(--line);border-radius:3px;padding:6px;box-sizing:border-box}
+#matModal .units td:nth-child(2){font-weight:700;color:var(--warn)}
+#matMsg{min-height:16px;margin-top:6px}
+#matMsg.bad{color:var(--bad)} #matMsg.ok{color:var(--ok)}
 </style>
 </head>
 <body>
@@ -682,6 +794,8 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
   <div class="sep"></div>
   <span id="dbstat"><span id="dbdot"></span><span id="dbtxt">baglanti bekleniyor</span></span>
   <div class="sep"></div>
+  <button class="btn" onclick="window.openMaterials()"
+          title="Malzeme tablolari (CSV): formulde AD_dens(sicaklik) gibi kullanilir">&#9879; Malzemeler</button>
   <button class="btn" onclick="window.openSettings()">&#9881; Ayarlar</button>
 </div>
 
@@ -719,6 +833,47 @@ select:focus,input:focus{outline:none;border-color:var(--accent)}
       <button class="btn" onclick="window.closeSettings()">Iptal</button>
       <button class="btn" onclick="window.testSettings()">Baglantiyi Test Et</button>
       <button class="btn" onclick="window.saveSettings()">Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= MALZEME MODAL ================= -->
+<div id="matMask">
+  <div id="matModal">
+    <h3>&#9879; Malzeme Tablolari</h3>
+    <div>Sunucuda saklanir; tum PC'lerde ayni liste gorunur. Formulde
+      <code>AD_dens(x)</code> <code>AD_cp(x)</code> <code>AD_dvis(x)</code> <code>AD_cond(x)</code>
+      &mdash; <code>x</code> sicaklik [degC]: sayi (<code>SU_dens(25)</code>), sensor (<code>SU_dens(T1)</code>)
+      ya da ifade olabilir. Tablodaki satirlar arasinda dogrusal ara deger alinir;
+      tablo araliginin <b>disinda sonuc bostur</b>.</div>
+
+    <h4>CSV bicimi &mdash; birimler ZORUNLU</h4>
+    <table class="units">
+      <tr><th>Sutun</th><th>Birim (zorunlu)</th><th>Anlam</th><th>Formulde</th></tr>
+      <tr><td>temp</td><td>degC</td><td>Sicaklik (ara deger ekseni)</td><td>&mdash;</td></tr>
+      <tr><td>dens</td><td>kg/m3</td><td>Yogunluk</td><td><code>AD_dens(x)</code></td></tr>
+      <tr><td>cp</td><td>J/kg&middot;K</td><td>Ozgul isi</td><td><code>AD_cp(x)</code></td></tr>
+      <tr><td>dvis</td><td>Pa&middot;s</td><td>Dinamik viskozite</td><td><code>AD_dvis(x)</code></td></tr>
+      <tr><td>cond</td><td>W/m&middot;K</td><td>Isil iletkenlik</td><td><code>AD_cond(x)</code></td></tr>
+    </table>
+    <div style="margin-top:6px;color:var(--dim)">Ilk satir tam olarak su baslik olmali (sutun sirasi serbest;
+      <code>;</code> ayracli ve ondalik virgullu Turkce Excel CSV'si de kabul edilir):<br>
+      <code>temp [degC],dens [kg/m3],cp [J/kg&middot;K],dvis [Pa&middot;s],cond [W/m&middot;K]</code></div>
+
+    <h4>Kayitli malzemeler</h4>
+    <div id="matList"></div>
+
+    <h4>Yeni malzeme / guncelle</h4>
+    <div class="frow"><label>Ad (formulde onek olur: harfle baslar, A-Z a-z 0-9 _)</label>
+      <input type="text" id="matName" placeholder="SU" maxlength="32" spellcheck="false"></div>
+    <div class="frow"><label>CSV dosyasi</label>
+      <input type="file" id="matFile" accept=".csv,text/csv,text/plain"></div>
+    <div class="frow"><label>...ya da CSV icerigini yapistirin</label>
+      <textarea id="matCsv" spellcheck="false" placeholder="temp [degC],dens [kg/m3],cp [J/kg·K],dvis [Pa·s],cond [W/m·K]&#10;0,998.73,4235.36,0.001779548,0.5567&#10;..."></textarea></div>
+    <div id="matMsg"></div>
+    <div class="mfoot">
+      <button class="btn" onclick="window.closeMaterials()">Kapat</button>
+      <button class="btn" id="matSave" onclick="window.saveMaterial()">Kaydet</button>
     </div>
   </div>
 </div>
@@ -2324,6 +2479,58 @@ window.syncChartsWithPool = function () {
    eval() KULLANILMAZ -- kendi sozcuk cozumleyici + ayristiricimiz vardir.
    ====================================================================================== */
 window.FXCACHE = {};                              /* formul metni -> derlenmis sonuc */
+
+/* --- MALZEME FONKSIYONLARI:  AD_dens(x) AD_cp(x) AD_dvis(x) AD_cond(x) -----------------
+   Tablolar sunucudadir (materials.json) ve WebSocket ile her ekrana gelir.
+   x = sicaklik [degC]; satirlar arasinda DOGRUSAL ara deger; aralik disi -> bos. */
+window.MATERIALS = {};
+window.MATPROPS = { dens: 1, cp: 2, dvis: 3, cond: 4 };   /* rows[i] icindeki sutun */
+window.MATRE = /^(.+)_(dens|cp|dvis|cond)$/;
+
+window.matFind = function (name) {
+  var k, low = String(name || '').toLowerCase();
+  for (k in window.MATERIALS) {
+    if (Object.prototype.hasOwnProperty.call(window.MATERIALS, k) && k.toLowerCase() === low) {
+      return window.MATERIALS[k];
+    }
+  }
+  return null;
+};
+
+window.matInterp = function (rows, col, t) {
+  if (t == null || !isFinite(t) || !rows || rows.length < 2) return null;
+  var n = rows.length;
+  if (t < rows[0][0] || t > rows[n - 1][0]) return null;
+  var lo = 0, hi = n - 1, mid;
+  while (hi - lo > 1) {
+    mid = (lo + hi) >> 1;
+    if (rows[mid][0] <= t) lo = mid; else hi = mid;
+  }
+  var t0 = rows[lo][0], t1 = rows[hi][0];
+  if (t1 === t0) return rows[lo][col];
+  return rows[lo][col] + (rows[hi][col] - rows[lo][col]) * (t - t0) / (t1 - t0);
+};
+
+/* 'su_dens' -> [1, 1, fn] (FXFUN bicimi) ya da null */
+window.fxMatSpec = function (key) {
+  var m = window.MATRE.exec(String(key || '').toLowerCase());
+  if (!m) return null;
+  var mat = window.matFind(m[1]);
+  if (!mat) return null;
+  var col = window.MATPROPS[m[2]];
+  return [1, 1, function (a) { return window.matInterp(mat.rows, col, a[0]); }];
+};
+
+window.applyMaterials = function (mats) {
+  window.MATERIALS = mats || {};
+  window.FXCACHE = {};                 /* "malzeme bulunamadi" derlemeleri tazelensin */
+  window.renderMatList();
+  if (window.CHARTS && window.CHARTS.length) {      /* acilista grafikler henuz kurulmamis olabilir */
+    window.renderPool(true);
+    window.refreshAll(false);
+    window.alarmWatch();
+  }
+};
 window.FXCONST = { pi: Math.PI, e: Math.E };      /* sensor adi bunlari golgeleyebilir */
 window.SIDRE   = /^[A-Za-z0-9_.-]{1,128}$/;       /* backend valid_sensor ile ayni */
 
@@ -2476,8 +2683,14 @@ window.fxParse = function (src) {
       var nxt = peek();
       if (!t.br && nxt && nxt.t === 'op' && nxt.v === '(') {
         key = t.v.toLowerCase();
-        spec = window.FXFUN[key];
-        if (!spec) throw new Error("Bilinmeyen fonksiyon: '" + t.v + "'");
+        spec = window.FXFUN[key] || window.fxMatSpec(key);
+        if (!spec) {
+          if (window.MATRE.test(key)) {
+            throw new Error("Malzeme bulunamadi: '" + t.v.replace(window.MATRE, '$1') +
+                            "' (Malzemeler penceresinden ekleyin)");
+          }
+          throw new Error("Bilinmeyen fonksiyon: '" + t.v + "'");
+        }
         pos++; args = [];
         if (!eat(')')) {
           do { args.push(pExpr()); } while (eat(','));
@@ -2539,7 +2752,7 @@ window.fxCompile = function (src) {
    grafikte yanlis sayi degil BOSLUK gorunur.  0'a bolme ve NaN de bosa dusurulur. */
 window.fxRun = function (ast, get, ctx) {
   var ev = function (nd) {
-    var i, v, x, y, r, vals, w, cur, sum, cnt;
+    var i, v, x, y, r, vals, w, cur, sum, cnt, spec;
     switch (nd.t) {
       case 'n': return nd.v;
       case 'r':
@@ -2609,7 +2822,9 @@ window.fxRun = function (ast, get, ctx) {
           if (v == null) return null;
           vals.push(v);
         }
-        r = window.FXFUN[nd.f][2](vals);
+        spec = window.FXFUN[nd.f] || window.fxMatSpec(nd.f);
+        if (!spec) return null;                  /* malzeme sonradan silindi */
+        r = spec[2](vals);
         return (r == null || !isFinite(r)) ? null : r;
     }
     return null;
@@ -3416,6 +3631,7 @@ window.connectWS = function () {
     try { msg = JSON.parse(ev.data); } catch (e) { return; }
     if (msg.type === 'pool') window.applyPool(msg.sensors || []);
     /* preset listesi GLOBAL: baska bir PC preset kaydederse liste aninda tazelenir */
+    else if (msg.type === 'materials') window.applyMaterials(msg.materials || {});
     else if (msg.type === 'presets') {
       window.PRESETS = msg.names || [];
       var sel = document.getElementById('presetSel');
@@ -4333,6 +4549,139 @@ window.deletePreset = function () {
 };
 
 /* ======================================================================================
+   13b) MALZEME PENCERESI
+   ====================================================================================== */
+window.fmtMat = function (v) {
+  if (v == null || !isFinite(v)) return '-';
+  var a = Math.abs(v);
+  return (a !== 0 && (a < 0.01 || a >= 1e6)) ? v.toExponential(4) : String(Math.round(v * 10000) / 10000);
+};
+
+window.renderMatList = function () {
+  var box = document.getElementById('matList');
+  if (!box) return;
+  var names = Object.keys(window.MATERIALS).sort(function (a, b) { return a.toLowerCase() < b.toLowerCase() ? -1 : 1; });
+  if (!names.length) { box.innerHTML = '<div style="color:var(--dim)">Henuz malzeme yok.</div>'; return; }
+  var h = '<table><tr><th>Ad</th><th>Satir</th><th>Sicaklik araligi [degC]</th><th>Ornek</th><th></th></tr>';
+  names.forEach(function (n) {
+    var r = window.MATERIALS[n].rows || [];
+    h += '<tr><td><b>' + window.esc(n) + '</b></td><td>' + r.length + '</td><td>' +
+         (r.length ? window.fmtMat(r[0][0]) + ' .. ' + window.fmtMat(r[r.length - 1][0]) : '-') + '</td>' +
+         '<td><code>' + window.esc(n) + '_dens(25)</code></td>' +
+         '<td style="white-space:nowrap"><button class="btn sm" data-edit="' + window.esc(n) + '">Duzenle</button> ' +
+         '<button class="btn sm" data-del="' + window.esc(n) + '">Sil</button></td></tr>';
+  });
+  box.innerHTML = h + '</table>';
+  Array.prototype.forEach.call(box.querySelectorAll('[data-del]'), function (b) {
+    b.addEventListener('click', function () { window.deleteMaterial(b.getAttribute('data-del')); });
+  });
+  Array.prototype.forEach.call(box.querySelectorAll('[data-edit]'), function (b) {
+    b.addEventListener('click', function () { window.editMaterial(b.getAttribute('data-edit')); });
+  });
+};
+
+/* Kayitli tabloyu duzenlemek icin CSV'ye geri cevir */
+window.editMaterial = function (name) {
+  var m = window.MATERIALS[name];
+  if (!m) return;
+  var lines = ['temp [degC],dens [kg/m3],cp [J/kg\u00b7K],dvis [Pa\u00b7s],cond [W/m\u00b7K]'];
+  (m.rows || []).forEach(function (r) { lines.push(r.join(',')); });
+  document.getElementById('matName').value = name;
+  document.getElementById('matCsv').value = lines.join('\n');
+  window.previewMaterial();
+};
+
+window.matMsg = function (txt, cls) {
+  var el = document.getElementById('matMsg');
+  el.textContent = txt;
+  el.className = cls || '';
+};
+
+window.postMaterial = function (dry) {
+  var name = document.getElementById('matName').value.trim();
+  var csv = document.getElementById('matCsv').value;
+  return fetch('/api/materials/' + encodeURIComponent(name || 'X'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ csv: csv, dry: !!dry })
+  }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+      return j;
+    });
+  });
+};
+
+window.previewMaterial = function () {
+  if (!document.getElementById('matCsv').value.trim()) { window.matMsg(''); return; }
+  window.postMaterial(true).then(function (j) {
+    var r = j.material.rows, last = r[r.length - 1];
+    window.matMsg('Gecerli: ' + r.length + ' satir, ' + window.fmtMat(r[0][0]) + ' .. ' +
+                  window.fmtMat(last[0]) + ' degC.  Ornek ilk satir: dens=' + window.fmtMat(r[0][1]) +
+                  ' cp=' + window.fmtMat(r[0][2]) + ' dvis=' + window.fmtMat(r[0][3]) +
+                  ' cond=' + window.fmtMat(r[0][4]), 'ok');
+  }).catch(function (e) { window.matMsg('HATA: ' + e.message, 'bad'); });
+};
+
+window.saveMaterial = function () {
+  var name = document.getElementById('matName').value.trim();
+  if (!name) { window.matMsg('HATA: ad bos.', 'bad'); return; }
+  var exists = Object.keys(window.MATERIALS).some(function (k) { return k.toLowerCase() === name.toLowerCase(); });
+  if (exists && !confirm('"' + name + '" zaten var. Uzerine yazilsin mi? (tum PC\'leri etkiler)')) return;
+  window.postMaterial(false).then(function (j) {
+    window.applyMaterials(j.materials || {});
+    window.matMsg('"' + j.name + '" kaydedildi. Formulde: ' + j.name + '_dens(x)', 'ok');
+    document.getElementById('matCsv').value = '';
+    document.getElementById('matFile').value = '';
+  }).catch(function (e) { window.matMsg('HATA: ' + e.message, 'bad'); });
+};
+
+window.deleteMaterial = function (name) {
+  if (!confirm('"' + name + '" malzemesi SUNUCUDAN silinsin mi?\nTum PC\'lerden kaybolur; onu kullanan formuller hata verir.')) return;
+  fetch('/api/materials/' + encodeURIComponent(name), { method: 'DELETE' })
+    .then(function (r) { return r.json(); })
+    .then(function (j) { window.applyMaterials(j.materials || {}); window.matMsg('"' + name + '" silindi.', 'ok'); })
+    .catch(function (e) { window.matMsg('HATA: ' + e.message, 'bad'); });
+};
+
+window.openMaterials = function () {
+  window.renderMatList();
+  window.matMsg('');
+  document.getElementById('matMask').style.display = 'flex';
+};
+window.closeMaterials = function () { document.getElementById('matMask').style.display = 'none'; };
+
+window.initMaterials = function () {
+  var file = document.getElementById('matFile');
+  var csv = document.getElementById('matCsv');
+  var nm = document.getElementById('matName');
+  file.addEventListener('change', function () {
+    var f = file.files && file.files[0];
+    if (!f) return;
+    if (!nm.value.trim()) nm.value = f.name.replace(/\.[^.]*$/, '').replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z]+/, '');
+    var rd = new FileReader();
+    rd.onload = function () {
+      var txt = String(rd.result || '');
+      /* Excel bazen ANSI (cp1254) kaydeder: UTF-8 bozuksa yeniden oku */
+      if (txt.indexOf('\ufffd') >= 0) {
+        var r2 = new FileReader();
+        r2.onload = function () { csv.value = String(r2.result || ''); window.previewMaterial(); };
+        r2.readAsText(f, 'windows-1254');
+        return;
+      }
+      csv.value = txt;
+      window.previewMaterial();
+    };
+    rd.readAsText(f, 'utf-8');
+  });
+  var tmr = null;
+  csv.addEventListener('input', function () { clearTimeout(tmr); tmr = setTimeout(window.previewMaterial, 300); });
+  fetch('/api/materials').then(function (r) { return r.json(); })
+    .then(function (j) { window.applyMaterials(j.materials || {}); })
+    .catch(function () {});
+};
+
+/* ======================================================================================
    14) SETTINGS MODAL
    ====================================================================================== */
 window.openSettings = function () {
@@ -4404,6 +4753,7 @@ window.boot = function () {
   window.loadColors();
   window.initGlobalPan();
   window.initPoolReorder();
+  window.initMaterials();
   document.addEventListener('keydown', function (e) {
     if (e.ctrlKey && e.shiftKey && (e.key === 'M' || e.key === 'm')) {
       e.preventDefault();
@@ -5044,6 +5394,53 @@ async def api_preset_delete(name: str) -> JSONResponse:
     return JSONResponse({"ok": True, "removed": existed, "names": preset_names()})
 
 
+class MaterialIn(BaseModel):
+    csv: str = ""
+    dry: bool = False          # True: yalnizca dogrula / onizle, kaydetme
+
+
+@app.get("/api/materials")
+async def api_materials() -> JSONResponse:
+    return JSONResponse({"materials": load_materials(),
+                         "columns": [{"col": c, "unit": u} for c, u in MAT_COLS]})
+
+
+@app.post("/api/materials/{name}")
+async def api_material_save(name: str, payload: MaterialIn) -> JSONResponse:
+    """CSV'den malzeme tablosu. Ad formulde onek olur: <ad>_dens(sicaklik)."""
+    name = (name or "").strip()
+    if not MAT_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Gecersiz ad: harfle baslamali; izinli A-Z a-z 0-9 _ (en fazla 32).")
+    try:
+        rows = parse_material_csv(payload.csv)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    rec = {"cols": [c for c, _ in MAT_COLS], "rows": rows, "ts": time.time()}
+    if payload.dry:
+        return JSONResponse({"ok": True, "name": name, "material": rec})
+    with _MAT_LOCK:
+        data = load_materials()
+        for old in [k for k in data if k.lower() == name.lower()]:
+            del data[old]                      # ayni ad (buyuk/kucuk harf farki) -> uzerine yaz
+        data[name] = rec
+        write_materials(data)
+    await hub.broadcast(material_payload())
+    return JSONResponse({"ok": True, "name": name, "material": rec, "materials": load_materials()})
+
+
+@app.delete("/api/materials/{name}")
+async def api_material_delete(name: str) -> JSONResponse:
+    with _MAT_LOCK:
+        data = load_materials()
+        removed = [k for k in data if k.lower() == (name or "").strip().lower()]
+        for k in removed:
+            del data[k]
+        if removed:
+            write_materials(data)
+    await hub.broadcast(material_payload())
+    return JSONResponse({"ok": True, "removed": len(removed), "materials": load_materials()})
+
+
 class PresetImportIn(BaseModel):
     presets: Dict[str, Any] = {}
 
@@ -5249,6 +5646,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
     try:
         await ws.send_text(json.dumps(pool_payload()))
         await ws.send_text(json.dumps(preset_payload()))
+        await ws.send_text(json.dumps(material_payload()))
         while True:
             await ws.receive_text()   # ping/keepalive; icerik onemli degil
     except WebSocketDisconnect:
